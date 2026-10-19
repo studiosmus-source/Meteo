@@ -1664,7 +1664,26 @@ addEventListener('orientationchange', recalibrate);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { lastGl = 0; lastOverlay = 0; requestRender(); } });
 
 if (glOk) {
-  glCanvas.addEventListener('webglcontextlost', e => { e.preventDefault(); showNotice('La grafica è stata sospesa dal sistema. Ricarica la pagina.'); });
+  glCanvas.addEventListener('webglcontextlost', e => {
+    e.preventDefault();
+    showNotice('Grafica sospesa da Android: ripristino in corso…');
+    // Il vecchio framebuffer non è più utilizzabile: evitare un wallpaper nero permanente.
+    document.documentElement.classList.remove('sky-ready');
+    cloudsDirty = true;
+  });
+  glCanvas.addEventListener('webglcontextrestored', () => {
+    try {
+      initGL();
+      cloudsDirty = true;
+      lastGl = 0;
+      lastOverlay = 0;
+      noticeEl.style.display = 'none';
+      requestRender();
+    } catch (err) {
+      console.error('WebGL restore failed', err);
+      showNotice('Ripristino grafico non riuscito: riapri lo sfondo Meteo.');
+    }
+  });
 }
 
 /* =========================================================================
