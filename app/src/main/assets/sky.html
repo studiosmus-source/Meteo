@@ -1,0 +1,1640 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#08152d">
+<title>Finestra sul cielo — Fotografico V6.8</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#08152d;
+  --fg:#ffffff;
+  --panel-bg:rgba(7,21,39,.6);
+  --panel-border:rgba(255,255,255,.21);
+  --btn-bg:rgba(255,255,255,.13);
+  --btn-border:rgba(255,255,255,.38);
+  --btn-active:rgba(245,211,140,.22);
+  --accent:#f5d38c;
+  --option-bg:#0b1d36;
+}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--fg);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+canvas{position:fixed;inset:0;display:block;width:100vw;height:100vh;height:100dvh}
+#fx{touch-action:none;cursor:grab}
+.panel{position:fixed;bottom:calc(16px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);
+  width:min(92vw,520px);padding:12px 16px;border:1px solid var(--panel-border);border-radius:18px;
+  background:var(--panel-bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+  box-shadow:0 6px 24px rgba(0,0,0,.27);transition:opacity .3s;z-index:3}
+.panel.hidden{opacity:0;pointer-events:none}
+.top{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:14px}
+.top .info{min-width:0}
+.top strong{font-variant-numeric:tabular-nums;font-size:18px}
+#phase{font-size:13px;line-height:1.25}
+button,select{border:1px solid var(--btn-border);border-radius:9px;padding:7px 10px;color:var(--fg);
+  background:var(--btn-bg);font:inherit;cursor:pointer;flex-shrink:0}
+select option{background:var(--option-bg);color:var(--fg)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+#live[aria-pressed="true"]{background:var(--btn-active);border-color:var(--accent)}
+input{width:100%;margin:12px 0 3px;accent-color:var(--accent)}
+.hint{font-size:11px;opacity:.75;display:flex;justify-content:space-between;gap:8px;font-variant-numeric:tabular-nums}
+.wx{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px}
+.wx label{opacity:.8}
+.wx select{font-size:13px;padding:6px 8px;max-width:48%}
+#wxstatus{flex:1;min-width:0;font-size:11px;line-height:1.3;opacity:.8}
+#toggle{position:fixed;top:calc(14px + env(safe-area-inset-top,0px));right:14px;z-index:4}
+#orient{font-size:12px}
+#notice{position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);width:min(86vw,420px);text-align:center;
+  font-size:15px;line-height:1.45;z-index:2;display:none}
+@media (prefers-reduced-motion:reduce){.panel{transition:none}}
+</style>
+</head>
+<body>
+<canvas id="gl" role="img" aria-label="Cielo dinamico realistico"></canvas>
+<canvas id="fx" aria-hidden="true"></canvas>
+<div id="notice" role="status"></div>
+<button id="toggle" type="button">Nascondi controlli</button>
+<section class="panel" id="panel" aria-label="Controlli del cielo">
+  <div class="top">
+    <div class="info">
+      <strong id="clock">--:--</strong>
+      <div id="phase">Cielo reale</div>
+    </div>
+    <button id="live" type="button" aria-pressed="true">Ora reale</button>
+    <button id="orient" type="button">Movimento: OFF</button>
+  </div>
+  <input id="time" type="range" min="0" max="1439" step="1" aria-label="Ora di prova">
+  <div class="hint"><span>00:00</span><span id="suntimes">Alba --:-- · Tramonto --:--</span><span>23:59</span></div>
+  <div class="hint" style="justify-content:flex-end;margin-top:2px"><span id="version">V6.8</span></div>
+  <div class="wx">
+    <label for="weather">Meteo</label>
+    <select id="weather">
+      <option value="reale">Reale (Milano)</option>
+      <option value="sereno">Sereno</option>
+      <option value="poco">Poco nuvoloso</option>
+      <option value="nuvoloso">Nuvoloso</option>
+      <option value="coperto">Coperto</option>
+      <option value="nebbia">Nebbia</option>
+      <option value="pioggia">Pioggia</option>
+      <option value="temporale">Temporale</option>
+      <option value="neve">Neve</option>
+    </select>
+    <span id="wxstatus" aria-live="polite"></span>
+  </div>
+</section>
+<script>
+'use strict';
+
+/* =========================================================================
+   CONFIGURAZIONE
+   ========================================================================= */
+const CONFIG = {
+  latitude: 45.47,
+  longitude: 9.19,
+  facingAzimuth: 0,        // direzione della finestra in gradi dal Sud: 0 = Sud, -90 = Est, +90 = Ovest
+  followSun: false,        // false = finestra ferma (consigliato). true = la vista ruota col sole, ma spostando
+                           // l'ora le nuvole scorrono e al tramonto/all'alba il verso si inverte
+  maxFovDeg: 80,           // campo visivo sul lato lungo dello schermo (obiettivo grandangolare)
+  maxDpr: 2,
+  cloudScale: 1 / 3,       // risoluzione delle nuvole volumetriche rispetto allo schermo
+  cloudRefreshMs: 0,       // 0 = ricalcolo continuo a strisce (un buffer completo ogni 4 frame)
+  cloudStrips: 4,          // il ricalcolo è diviso in 4 strisce, una per frame: nessun frame pesante
+  windTimeScale: 8,        // le nuvole si muovono 8 volte più veloci del vero: a velocità reale sembrano ferme
+  parallaxPx: 24,
+  weatherRefreshMin: 15,
+  weatherRetryMin: 5,
+  maxRainDrops: 420,
+  maxSnowFlakes: 260
+};
+
+/* =========================================================================
+   UTILITÀ
+   ========================================================================= */
+const DEG = Math.PI / 180;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const mix = (a, b, t) => a + (b - a) * t;
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const blend = (a, b, t) => a.map((v, i) => mix(v, b[i], t));
+const rgba = (c, a) => `rgba(${c.map(x => Math.round(clamp(x, 0, 255))).join(',')},${clamp(a, 0, 1).toFixed(4)})`;
+const pad = n => String(n).padStart(2, '0');
+const fmtMinutes = m => `${pad(Math.floor(m / 60) % 24)}:${pad(Math.floor(m % 60))}`;
+const wrapDeg = a => ((a + 540) % 360) - 180;
+
+const storage = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* non disponibile */ } }
+};
+
+/* =========================================================================
+   ASTRONOMIA — algoritmo NOAA in UTC
+   ========================================================================= */
+function refraction(alt) {
+  if (alt < -3) return 0;
+  const h = Math.max(alt, -1);
+  return (1.02 / Math.tan((h + 10.3 / (h + 5.11)) * DEG)) / 60 * smooth(-3, -1, alt);
+}
+
+function solarPosition(date) {
+  const jd = date.getTime() / 86400000 + 2440587.5;
+  const T = (jd - 2451545) / 36525;
+  const L0 = ((280.46646 + T * (36000.76983 + T * 0.0003032)) % 360 + 360) % 360;
+  const M = 357.52911 + T * (35999.05029 - 0.0001537 * T);
+  const e = 0.016708634 - T * (0.000042037 + 0.0000001267 * T);
+  const Mr = M * DEG;
+  const C = Math.sin(Mr) * (1.914602 - T * (0.004817 + 0.000014 * T))
+          + Math.sin(2 * Mr) * (0.019993 - 0.000101 * T) + Math.sin(3 * Mr) * 0.000289;
+  const omega = (125.04 - 1934.136 * T) * DEG;
+  const lambda = (L0 + C - 0.00569 - 0.00478 * Math.sin(omega)) * DEG;
+  const eps0 = 23 + (26 + (21.448 - T * (46.815 + T * (0.00059 - T * 0.001813))) / 60) / 60;
+  const eps = (eps0 + 0.00256 * Math.cos(omega)) * DEG;
+  const dec = Math.asin(Math.sin(eps) * Math.sin(lambda));
+  const y = Math.tan(eps / 2) ** 2, L0r = L0 * DEG;
+  const eot = 4 / DEG * (y * Math.sin(2 * L0r) - 2 * e * Math.sin(Mr) + 4 * e * y * Math.sin(Mr) * Math.cos(2 * L0r)
+            - 0.5 * y * y * Math.sin(4 * L0r) - 1.25 * e * e * Math.sin(2 * Mr));
+  const utcMin = date.getUTCHours() * 60 + date.getUTCMinutes() + date.getUTCSeconds() / 60;
+  let tst = (utcMin + eot + 4 * CONFIG.longitude) % 1440;
+  if (tst < 0) tst += 1440;
+  const ha = (tst / 4 - 180) * DEG;
+  const lat = CONFIG.latitude * DEG;
+  const sinAlt = Math.sin(lat) * Math.sin(dec) + Math.cos(lat) * Math.cos(dec) * Math.cos(ha);
+  const alt = Math.asin(clamp(sinAlt, -1, 1)) / DEG;
+  const az = Math.atan2(Math.sin(ha), Math.cos(ha) * Math.sin(lat) - Math.tan(dec) * Math.cos(lat)) / DEG;
+  return { alt, az, apparentAlt: alt + refraction(alt) };
+}
+
+function computeSunTimes(date) {
+  const y = date.getFullYear(), m = date.getMonth(), d = date.getDate();
+  const altAt = min => solarPosition(new Date(y, m, d, 0, min)).alt + 0.833;
+  let rise = null, set = null, prev = altAt(0);
+  for (let min = 1; min <= 1440; min++) {
+    const cur = altAt(min);
+    if (prev < 0 && cur >= 0 && rise === null) rise = min - 1 + (-prev) / (cur - prev);
+    if (prev >= 0 && cur < 0) set = min - 1 + prev / (prev - cur);
+    prev = cur;
+  }
+  return { rise, set };
+}
+
+/** Direzione nel mondo: x = Est, y = alto, z = Sud. Azimut misurato da Nord. */
+function dirFromAzEl(azNorthDeg, elDeg) {
+  const A = azNorthDeg * DEG, E = elDeg * DEG;
+  return [Math.sin(A) * Math.cos(E), Math.sin(E), -Math.cos(A) * Math.cos(E)];
+}
+
+/* =========================================================================
+   ATMOSFERA — costanti fisiche (km, coefficienti per km)
+   Le stesse costanti sono usate nella GPU e qui per il colore del sole.
+   ========================================================================= */
+const ATM = {
+  RE: 6360, RA: 6460,
+  BR: [5.802e-3, 13.558e-3, 33.1e-3], HR: 8,
+  BMS: 3.996e-3, BME: 4.40e-3, HM: 1.2,
+  BO: [0.650e-3, 1.881e-3, 0.085e-3],
+  SUN: 20                                 // intensità del sole (unità relative)
+};
+
+function raySphere(ro, rd, r) {
+  const b = ro[0] * rd[0] + ro[1] * rd[1] + ro[2] * rd[2];
+  const c = ro[0] * ro[0] + ro[1] * ro[1] + ro[2] * ro[2] - r * r;
+  const d = b * b - c;
+  if (d < 0) return [-1, -1];
+  const s = Math.sqrt(d);
+  return [-b - s, -b + s];
+}
+
+/** Trasmittanza dal punto a quota h (km) verso la direzione dir, fino allo spazio. */
+function transmittance(h, dir, haze) {
+  const ro = [0, ATM.RE + h, 0];
+  const g = raySphere(ro, dir, ATM.RE);
+  if (g[0] > 0) return [0, 0, 0];         // il raggio incontra la Terra: ombra
+  const tTop = raySphere(ro, dir, ATM.RA)[1];
+  const N = 40, dt = tTop / N;
+  const od = [0, 0, 0];
+  for (let i = 0; i < N; i++) {
+    const t = (i + 0.5) * dt;
+    const p = [ro[0] + dir[0] * t, ro[1] + dir[1] * t, ro[2] + dir[2] * t];
+    const hh = Math.hypot(p[0], p[1], p[2]) - ATM.RE;
+    const dR = Math.exp(-hh / ATM.HR), dM = Math.exp(-hh / ATM.HM), dO = Math.max(0, 1 - Math.abs(hh - 25) / 15);
+    for (let k = 0; k < 3; k++) od[k] += (ATM.BR[k] * dR + ATM.BME * haze * dM + ATM.BO[k] * dO) * dt;
+  }
+  return od.map(v => Math.exp(-v));
+}
+
+/* =========================================================================
+   METEO (identico alla V5)
+   ========================================================================= */
+const BASE_WX = { cover: 0.3, rain: 0, snow: 0, fog: 0, dark: 0, thunder: false, wind: 6, windDir: 270 };
+const WX_PRESETS = {
+  sereno:    { cover: 0.0 },
+  poco:      { cover: 0.25 },
+  nuvoloso:  { cover: 0.6, wind: 10 },
+  coperto:   { cover: 1, dark: 0.25, wind: 10 },
+  nebbia:    { cover: 0.15, fog: 0.9, wind: 2 },
+  pioggia:   { cover: 1, rain: 0.6, dark: 0.5, wind: 14, windDir: 240 },
+  temporale: { cover: 1, rain: 0.95, dark: 0.8, thunder: true, wind: 30, windDir: 250 },
+  neve:      { cover: 1, snow: 0.7, dark: 0.15, wind: 6 }
+};
+const WMO = {
+  0: ['Sereno', {}], 1: ['Prevalentemente sereno', {}], 2: ['Parzialmente nuvoloso', {}], 3: ['Coperto', { dark: 0.2 }],
+  45: ['Nebbia', { fog: 0.85 }], 48: ['Nebbia con brina', { fog: 0.9 }],
+  51: ['Pioviggine debole', { rain: 0.18, dark: 0.3 }], 53: ['Pioviggine moderata', { rain: 0.28, dark: 0.35 }],
+  55: ['Pioviggine intensa', { rain: 0.4, dark: 0.4 }],
+  56: ['Pioviggine gelata debole', { rain: 0.25, dark: 0.35 }], 57: ['Pioviggine gelata intensa', { rain: 0.4, dark: 0.4 }],
+  61: ['Pioggia debole', { rain: 0.4, dark: 0.4 }], 63: ['Pioggia moderata', { rain: 0.65, dark: 0.5 }],
+  65: ['Pioggia forte', { rain: 0.9, dark: 0.65 }],
+  66: ['Pioggia gelata debole', { rain: 0.45, dark: 0.45 }], 67: ['Pioggia gelata forte', { rain: 0.8, dark: 0.6 }],
+  71: ['Neve debole', { snow: 0.35, dark: 0.1 }], 73: ['Neve moderata', { snow: 0.6, dark: 0.15 }],
+  75: ['Neve forte', { snow: 0.9, dark: 0.25 }], 77: ['Granelli di neve', { snow: 0.3, dark: 0.1 }],
+  80: ['Rovesci deboli', { rain: 0.5, dark: 0.5 }], 81: ['Rovesci moderati', { rain: 0.75, dark: 0.6 }],
+  82: ['Rovesci violenti', { rain: 1, dark: 0.75 }],
+  85: ['Rovesci di neve deboli', { snow: 0.5, dark: 0.2 }], 86: ['Rovesci di neve forti', { snow: 0.9, dark: 0.3 }],
+  95: ['Temporale', { rain: 0.85, dark: 0.8, thunder: true }],
+  96: ['Temporale con grandine', { rain: 0.9, dark: 0.85, thunder: true }],
+  99: ['Temporale con grandine forte', { rain: 1, dark: 0.9, thunder: true }]
+};
+
+function wmoToWeather(rec) {
+  const [desc, fx] = WMO[rec.code] || ['Condizioni non classificate', {}];
+  const w = Object.assign({}, BASE_WX, fx);
+  w.cover = clamp((rec.cloud ?? 50) / 100, 0, 1);
+  if (w.rain || w.snow || w.thunder) w.cover = Math.max(w.cover, 0.95);
+  if (rec.wind != null) w.wind = rec.wind;
+  if (rec.windDir != null) w.windDir = rec.windDir;
+  w.desc = desc;
+  w.temp = rec.temp;
+  return w;
+}
+
+const real = { status: 'idle', current: null, hourly: new Map(), fetchedAt: 0, retryAt: 0, dayKey: '' };
+
+async function fetchWeather() {
+  real.status = 'loading';
+  updateWxStatus();
+  const fields = 'temperature_2m,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m';
+  // Il vento in quota (850 hPa ≈ 1500 m) è quello che muove davvero le nubi; l'API lo fornisce solo orario
+  const upper = 'wind_speed_850hPa,wind_direction_850hPa';
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${CONFIG.latitude}&longitude=${CONFIG.longitude}`
+            + `&current=${fields}&hourly=${fields},${upper}&forecast_days=2&timezone=auto`;
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const j = await res.json();
+    const toRec = (src, i) => ({
+      code: i == null ? src.weather_code : src.weather_code[i],
+      cloud: i == null ? src.cloud_cover : src.cloud_cover[i],
+      temp: i == null ? src.temperature_2m : src.temperature_2m[i],
+      wind: i == null ? src.wind_speed_10m : src.wind_speed_10m[i],
+      windDir: i == null ? src.wind_direction_10m : src.wind_direction_10m[i],
+      windHi: i == null ? null : (src.wind_speed_850hPa ? src.wind_speed_850hPa[i] : null),
+      windHiDir: i == null ? null : (src.wind_direction_850hPa ? src.wind_direction_850hPa[i] : null)
+    });
+    real.current = toRec(j.current);
+    real.hourly = new Map();
+    (j.hourly.time || []).forEach((t, i) => real.hourly.set(t, toRec(j.hourly, i)));
+    real.status = 'ok';
+    real.fetchedAt = Date.now();
+    real.dayKey = dayKeyOf(new Date());
+  } catch (e) {
+    real.status = 'error';
+    real.retryAt = Date.now() + CONFIG.weatherRetryMin * 60000;
+  } finally {
+    clearTimeout(timeout);
+  }
+  renderKey = '';
+  requestRender();
+}
+
+function maybeFetchWeather() {
+  if (wxMode !== 'reale' || real.status === 'loading') return;
+  const now = Date.now();
+  if (real.status === 'error' && now < real.retryAt) return;
+  const stale = now - real.fetchedAt > CONFIG.weatherRefreshMin * 60000;
+  if (real.status === 'idle' || real.status === 'error' || stale || real.dayKey !== dayKeyOf(new Date())) fetchWeather();
+}
+
+function hourKey(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:00`; }
+
+/*
+  Vento delle nubi. Le nubi si muovono con il vento in quota, non con quello al suolo:
+  a Milano il vento al suolo segue le brezze e si inverte tra giorno e notte, quello
+  a 1500 m resta stabile. Usare il vento al suolo faceva andare le nubi al contrario di notte.
+  Per i dati reali il valore è interpolato tra le ore (come vettore, non come angolo).
+*/
+function upperWindAt(date) {
+  const h0 = new Date(date.getFullYear(), date.getMonth(), date.getDate(), date.getHours());
+  const h1 = new Date(h0.getTime() + 3600000);
+  const a = real.hourly.get(hourKey(h0)), b = real.hourly.get(hourKey(h1)) || a;
+  if (!a || a.windHi == null || a.windHiDir == null) return null;
+  const t = (date.getTime() - h0.getTime()) / 3600000;
+  const vec = r => { const d = r.windHiDir * DEG; return [Math.sin(d) * r.windHi, Math.cos(d) * r.windHi]; };
+  const va = vec(a), vb = (b.windHi != null && b.windHiDir != null) ? vec(b) : va;
+  const x = mix(va[0], vb[0], t), y = mix(va[1], vb[1], t);
+  return { speed: Math.hypot(x, y), dir: ((Math.atan2(x, y) / DEG) + 360) % 360 };
+}
+
+function activeWeather(date) {
+  let w;
+  if (wxMode !== 'reale') w = Object.assign({}, BASE_WX, WX_PRESETS[wxMode], { desc: null });
+  else if (real.status === 'ok') {
+    const rec = manual === null ? real.current : (real.hourly.get(hourKey(date)) || real.current);
+    w = wmoToWeather(rec);
+  } else w = Object.assign({}, BASE_WX, { cover: seedCover, desc: null });
+  // Simulazioni e ripiego: in quota il vento è più forte e ha la stessa direzione
+  w.cloudWind = w.wind * 2.2 + 8;
+  w.cloudWindDir = w.windDir;
+  if (wxMode === 'reale' && real.status === 'ok') {
+    const up = upperWindAt(date);
+    if (up) { w.cloudWind = up.speed; w.cloudWindDir = up.dir; }
+  }
+  return w;
+}
+
+/* =========================================================================
+   SHADER
+   ========================================================================= */
+const VS = `#version 300 es
+out vec2 vUv;
+void main(){
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  vUv = p;
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+const COMMON = `#version 300 es
+precision highp float;
+precision highp sampler3D;
+const float PI = 3.14159265359;
+const float RE = ${ATM.RE.toFixed(1)};
+const float RA = ${ATM.RA.toFixed(1)};
+const vec3 BR = vec3(${ATM.BR.map(v => v.toExponential(4)).join(',')});
+const float HR = ${ATM.HR.toFixed(2)};
+const float BMS = ${ATM.BMS.toExponential(4)};
+const float BME = ${ATM.BME.toExponential(4)};
+const float HM = ${ATM.HM.toFixed(2)};
+const vec3 BO = vec3(${ATM.BO.map(v => v.toExponential(4)).join(',')});
+uniform float uHaze;
+uniform vec3 uSunDir;
+in vec2 vUv;
+layout(location = 0) out vec4 fragColor;
+
+vec2 raySphere(vec3 ro, vec3 rd, float r){
+  float b = dot(ro, rd);
+  float c = dot(ro, ro) - r * r;
+  float d = b * b - c;
+  if (d < 0.0) return vec2(-1.0);
+  float s = sqrt(d);
+  return vec2(-b - s, -b + s);
+}
+vec3 extinctionAt(float h){
+  float dR = exp(-h / HR), dM = exp(-h / HM), dO = max(0.0, 1.0 - abs(h - 25.0) / 15.0);
+  return BR * dR + vec3(BME * uHaze * dM) + BO * dO;
+}
+float phaseR(float mu){ return 3.0 / (16.0 * PI) * (1.0 + mu * mu); }
+float phaseHG(float mu, float g){
+  float g2 = g * g;
+  return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * mu, 1e-4), 1.5));
+}
+float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float hash13(vec3 p3){ p3 = fract(p3 * 0.1031); p3 += dot(p3, p3.zyx + 31.32); return fract((p3.x + p3.y) * p3.z); }
+`;
+
+// Lookup del cielo: parametrizzazione (azimut relativo al sole, elevazione con più risoluzione all'orizzonte)
+const SKY_LOOKUP = `
+uniform sampler2D uSkyLut;
+vec3 skyLookup(vec3 dir){
+  float el = asin(clamp(dir.y, -1.0, 1.0));
+  vec2 sh = vec2(uSunDir.x, uSunDir.z);
+  vec2 dh = vec2(dir.x, dir.z);
+  float ls = length(sh), ld = length(dh);
+  float relAz = (ls < 1e-4 || ld < 1e-4) ? 0.0 : acos(clamp(dot(sh / ls, dh / ld), -1.0, 1.0));
+  float v = 0.5 + 0.5 * sign(el) * sqrt(abs(el) / (PI * 0.5));
+  return texture(uSkyLut, vec2(relAz / PI, v)).rgb;
+}
+`;
+
+// 1) Sky-view LUT: diffusione singola di Rayleigh + Mie + assorbimento dell'ozono
+const FS_SKYLUT = COMMON + `
+uniform float uSunIllum;
+uniform vec3 uMsAmb;
+vec3 sunTrans(vec3 p){
+  if (raySphere(p, uSunDir, RE).x > 0.0) return vec3(0.0);
+  float tTop = raySphere(p, uSunDir, RA).y;
+  vec3 od = vec3(0.0);
+  float dt = tTop / 8.0;
+  for (int i = 0; i < 8; i++){
+    vec3 q = p + uSunDir * ((float(i) + 0.5) * dt);
+    od += extinctionAt(length(q) - RE) * dt;
+  }
+  return exp(-od);
+}
+void main(){
+  float relAz = vUv.x * PI;
+  float vv = vUv.y * 2.0 - 1.0;
+  float el = sign(vv) * vv * vv * PI * 0.5;
+  vec3 up = vec3(0.0, 1.0, 0.0);
+  vec2 sh2 = vec2(uSunDir.x, uSunDir.z);
+  vec3 sh = length(sh2) > 1e-4 ? normalize(vec3(sh2.x, 0.0, sh2.y)) : vec3(1.0, 0.0, 0.0);
+  vec3 side = normalize(cross(up, sh));
+  vec3 dir = cos(el) * (cos(relAz) * sh + sin(relAz) * side) + sin(el) * up;
+  vec3 ro = vec3(0.0, RE + 0.2, 0.0);
+  float tEnd = raySphere(ro, dir, RA).y;
+  vec2 g = raySphere(ro, dir, RE);
+  if (g.x > 0.0) tEnd = min(tEnd, g.x);
+  float mu = dot(dir, uSunDir);
+  float pR = phaseR(mu), pM = phaseHG(mu, 0.8);
+  vec3 L = vec3(0.0), T = vec3(1.0);
+  const int N = 32;
+  float tPrev = 0.0;
+  for (int i = 0; i < N; i++){
+    float f = (float(i) + 1.0) / float(N);
+    float t = tEnd * f * f;                       // passi più fitti vicino all'osservatore
+    float dt = t - tPrev;
+    vec3 p = ro + dir * (tPrev + dt * 0.5);
+    tPrev = t;
+    float h = length(p) - RE;
+    vec3 sR = BR * exp(-h / HR);
+    float sM = BMS * uHaze * exp(-h / HM);
+    vec3 ext = extinctionAt(h);
+    vec3 scat = (sR * pR + sM * pM) * sunTrans(p) * uSunIllum + (sR + sM) * uMsAmb;
+    vec3 stepT = exp(-ext * dt);
+    L += T * scat * (1.0 - stepT) / max(ext, vec3(1e-7));
+    T *= stepT;
+  }
+  fragColor = vec4(L, 1.0);
+}`;
+
+// 2) Nuvole volumetriche (raymarching con illuminazione dal sole e dal cielo)
+const FS_CLOUDS = COMMON + SKY_LOOKUP + `
+uniform sampler3D uNoise;
+uniform vec3 uFwd, uRight, uUp;
+uniform vec2 uTan;
+uniform vec2 uMargin;
+uniform vec3 uSunColor;     // luce solare a quota nuvole
+uniform vec3 uGroundAmb;    // luce dal basso (suolo illuminato, città di notte)
+uniform vec3 uNightAmb;     // luce notturna dall'alto (fondo del cielo)
+uniform float uSunUp;       // 1 con sole sopra l'orizzonte, 0 sotto
+uniform float uTwi;         // 1 con sole sotto −4°, 0 sopra 0°
+uniform float uCover, uDark, uBase, uTop, uCirrus, uHazeDist;
+uniform vec2 uWind;         // spostamento accumulato del vento, km
+uniform float uDesat;       // le nubi spesse diffondono più volte la luce e la rendono neutra
+layout(location = 1) out vec4 fragDepth;   // distanza media delle nubi (km), per la riproiezione
+
+float remap(float v, float l0, float h0, float l1, float h1){ return l1 + (v - l0) * (h1 - l1) / (h0 - l0); }
+
+float cloudDensity(vec3 q, float h, bool detail){
+  if (h < 0.0 || h > 1.0) return 0.0;
+  vec3 w = q - vec3(uWind.x, 0.0, uWind.y);
+  // Variazione di copertura a grande scala, per non avere un cielo uniforme
+  float big = texture(uNoise, vec3(w.x / 70.0, w.z / 70.0, 0.37)).r;
+  float cov = clamp(uCover * (1.08 + (big - 0.5) * 1.3 * (1.0 - uCover)), 0.0, 1.0);
+  if (cov <= 0.001) return 0.0;
+  // Profilo verticale: base piatta, sommità arrotondate; con cielo coperto lo strato è pieno
+  float shapeCu = smoothstep(0.0, 0.1, h) * smoothstep(1.0, 0.45, h);
+  // Con cielo coperto la base dello strato è ondulata: zone più spesse e più sottili,
+  // senza le quali lo strato è uniforme e il suo movimento non si percepisce
+  float bump = texture(uNoise, vec3(w.x / 7.0, 0.71, w.z / 7.0)).r;
+  float hs = h - (bump - 0.5) * 0.45;
+  float shapeSt = smoothstep(0.0, 0.08, hs) * smoothstep(1.0, 0.75, h) * (0.55 + 0.45 * bump);
+  float shape = mix(shapeCu, shapeSt, smoothstep(0.75, 1.0, uCover));
+  float base = texture(uNoise, vec3(w.x / 14.0, w.y / 6.0, w.z / 14.0)).r;
+  float d = remap(base * shape, 1.0 - cov, 1.0, 0.0, 1.0);
+  if (d <= 0.0 || !detail) return clamp(d, 0.0, 1.0);
+  // Erosione dei bordi con rumore fine
+  float det = texture(uNoise, w / 2.4).g;
+  d = remap(d, det * 0.25 * (1.0 - h * 0.4), 1.0, 0.0, 1.0);
+  return clamp(d, 0.0, 1.0);
+}
+
+vec3 overcastColor(vec3 ambTop){
+  return ambTop * 0.5 * (1.0 - uDark * 0.75) + uGroundAmb + uSunColor * 0.012;
+}
+
+void main(){
+  vec2 uvE = vUv * (1.0 + 2.0 * uMargin) - uMargin;
+  vec2 ndc = uvE * 2.0 - 1.0;
+  vec3 dir = normalize(uFwd + ndc.x * uTan.x * uRight + ndc.y * uTan.y * uUp);
+  if (dir.y < -0.01){ fragColor = vec4(0.0, 0.0, 0.0, 1.0); fragDepth = vec4(0.0); return; }
+
+  vec3 ro = vec3(0.0, RE + 0.1, 0.0);
+  float t0 = raySphere(ro, dir, RE + uBase).y;
+  float t1 = raySphere(ro, dir, RE + uTop).y;
+  t1 = min(t1, t0 + 12.0);                      // limita il tratto quasi orizzontale
+  float sigma = 28.0 * (1.0 + uDark * 1.8);     // coefficiente di estinzione, per km
+  float mu = dot(dir, uSunDir);
+  // Diffusione multipla approssimata a ottave (luce che rimbalza dentro la nube)
+  float ph0 = mix(phaseHG(mu, 0.8), phaseHG(mu, -0.25), 0.3);
+  vec3 ambTop = (skyLookup(vec3(0.0, 1.0, 0.0)) * 0.6 + skyLookup(normalize(vec3(uSunDir.z, 0.25, -uSunDir.x))) * 0.4) * 1.6 + uNightAmb;
+  // Al crepuscolo la luce arriva soprattutto dal chiarore all'orizzonte dalla parte del sole
+  // (solo con il sole già sotto l'orizzonte: prima quel punto contiene l'alone del sole e abbaglierebbe)
+  ambTop += skyLookup(normalize(vec3(uSunDir.x, 0.15, uSunDir.z))) * 1.1 * uTwi;
+  float ovc = smoothstep(0.6, 1.0, uCover);
+
+  vec3 L = vec3(0.0);
+  float T = 1.0, dSum = 0.0, wSum = 0.0;
+  // Anche dove non c'è nube si salva la distanza dello strato: serve a far entrare
+  // le nubi nelle zone libere durante la riproiezione
+  float depthOut = 0.5 * (t0 + t1);
+  if (t0 >= 150.0){
+    float expT = 1.0 - smoothstep(0.55, 0.97, uCover);
+    L = (1.0 - expT) * mix(overcastColor(ambTop), skyLookup(dir), 0.25 * (1.0 - ovc));
+    T = expT;
+  } else {
+    const int N = 64;
+    float dt = (t1 - t0) / float(N);
+    float jitter = hash12(gl_FragCoord.xy);
+    for (int i = 0; i < N; i++){
+      float t = t0 + (float(i) + jitter) * dt;
+      vec3 p = ro + dir * t;
+      float h = (length(p) - RE - uBase) / (uTop - uBase);
+      vec3 q = p - ro;
+      float d = cloudDensity(q, h, true);
+      if (d > 0.002){
+        // Profondità ottica verso il sole
+        float od = 0.0, st = 0.12, tl = 0.0;
+        for (int j = 0; j < 5; j++){
+          tl += st;
+          vec3 pl = p + uSunDir * tl;
+          float hl = (length(pl) - RE - uBase) / (uTop - uBase);
+          od += cloudDensity(pl - ro, hl, false) * sigma * st;
+          st *= 1.6;
+        }
+        float S = 0.0, a = 1.0, b = 1.0, c = 1.0;
+        for (int k = 0; k < 3; k++){
+          S += a * exp(-od * b) * mix(phaseHG(mu, 0.8 * c), phaseHG(mu, -0.25 * c), 0.3);
+          a *= 0.5; b *= 0.4; c *= 0.5;
+        }
+        float powder = 1.0 - exp(-d * sigma * 0.25);
+        S *= mix(1.0, powder * 2.0, 0.35);
+        // Le zone sotto una colonna di nube più spessa ricevono meno luce dall'alto
+        // Luce diffusa del cielo: più debole verso la base della nube. L'ombreggiatura basata sul
+        // percorso verso il sole vale solo con il sole alto; di notte non ha senso e oscurava tutto.
+        float shade = mix(1.0, 0.35 + 0.65 * exp(-od * 0.15), uSunUp);
+        vec3 amb = (ambTop * mix(0.55, 1.0, clamp(h, 0.0, 1.0)) * shade + uGroundAmb * mix(1.0, 0.4, clamp(h, 0.0, 1.0)))
+                 * (1.0 - uDark * 0.6);
+        vec3 Ls = uSunColor * S * PI * 0.5 + amb;
+        float sT = exp(-d * sigma * dt);
+        float absorbed = T * (1.0 - sT);
+        L += Ls * absorbed;
+        dSum += t * absorbed; wSum += absorbed;
+        T *= sT;
+        if (T < 0.01) break;
+      }
+    }
+    // Prospettiva aerea: le nubi lontane si confondono con il cielo
+    float dAvg = wSum > 0.0 ? dSum / wSum : t0;
+    depthOut = wSum > 0.0 ? dAvg : depthOut;
+    float aer = exp(-dAvg / uHazeDist);
+    // Sotto un cielo coperto l'aria è illuminata dalla luce diffusa, non dal sole diretto:
+    // niente bagliore solare nella foschia lontana
+    vec3 airCol = mix(skyLookup(dir), overcastColor(ambTop), ovc);
+    L = L * aer + (1.0 - T) * (1.0 - aer) * airCol;
+    float farFade = smoothstep(150.0, 70.0, t0);
+    float expT = 1.0 - smoothstep(0.55, 0.97, uCover);          // opacità attesa delle nubi lontane
+    vec3 farL = (1.0 - expT) * mix(overcastColor(ambTop), skyLookup(dir), 0.25 * (1.0 - ovc));
+    L = mix(farL, L, farFade);
+    T = mix(expT, T, farFade);
+  }
+
+  // Cirri: strato sottile a 9 km
+  if (uCirrus > 0.001){
+    float tc = raySphere(ro, dir, RE + 9.0).y;
+    vec3 pc = dir * tc - vec3(uWind.x * 1.6, 0.0, uWind.y * 1.6);
+    float n = texture(uNoise, vec3(pc.x / 45.0, 0.61, pc.z / 14.0)).r;
+    float n2 = texture(uNoise, vec3(pc.x / 9.0, 0.23, pc.z / 4.0)).g;
+    float dc = smoothstep(0.62, 0.95, n * 0.75 + n2 * 0.35) * uCirrus * smoothstep(400.0, 150.0, tc);
+    float ac = dc * 0.55;
+    vec3 Lc = uSunColor * phaseHG(mu, 0.6) * 4.0 + ambTop * 1.1;
+    float aer = exp(-tc / (uHazeDist * 2.5));
+    Lc = Lc * aer + skyLookup(dir) * (1.0 - aer);
+    L += T * Lc * ac;
+    T *= 1.0 - ac;
+  }
+  L = mix(L, vec3(dot(L, vec3(0.2126, 0.7152, 0.0722))), uDesat);
+  fragColor = vec4(L, T);
+  fragDepth = vec4(depthOut, 0.0, 0.0, 1.0);
+}`;
+
+// 3) Composizione finale: cielo + sole + stelle + nubi + nebbia, tone mapping
+const FS_COMPOSITE = COMMON + SKY_LOOKUP + `
+uniform sampler2D uClouds;
+uniform sampler2D uCloudDepth;
+uniform vec2 uWindDelta;     // spostamento del vento dall'ultimo ricalcolo, km
+uniform vec3 uCFwd, uCRight, uCUp;   // camera con cui è stato calcolato il buffer delle nubi
+uniform vec2 uCTan;
+uniform vec3 uFwd, uRight, uUp;
+uniform vec2 uTan, uOffset, uMargin;
+uniform vec3 uSunDisk;       // radianza del sole al suolo
+uniform float uExposure, uStars, uTime, uPixAngle, uFlash, uFog, uRainVeil;
+uniform vec3 uCity;          // inquinamento luminoso
+uniform vec3 uNightSky;      // luminescenza notturna di fondo
+uniform vec3 uGroundCol;
+uniform float uOvercast, uDark;
+uniform vec3 uGroundAmb, uSunColor;
+
+vec3 aces(vec3 x){ return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+vec3 toSrgb(vec3 c){ return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
+
+vec2 projC(vec3 v){
+  float z = max(dot(v, uCFwd), 1e-4);
+  return vec2(dot(v, uCRight) / (z * uCTan.x), dot(v, uCUp) / (z * uCTan.y)) * 0.5 + 0.5;
+}
+vec2 toBuf(vec2 uvc){ return (uvc + uMargin) / (1.0 + 2.0 * uMargin); }
+
+vec3 starField(vec3 d){
+  vec3 p = d * 170.0;
+  vec3 c = floor(p);
+  float h = hash13(c);
+  if (h < 0.982) return vec3(0.0);
+  vec3 sp = vec3(hash13(c + 1.3), hash13(c + 2.7), hash13(c + 4.1)) * 0.6 + 0.2;
+  float dist = length(fract(p) - sp) / 170.0;
+  float pa = max(uPixAngle, 1e-4);
+  float b = exp(-dist * dist / (pa * pa * 0.9));
+  float mag = pow(hash13(c + 7.7), 5.0) * 0.9 + 0.08;
+  float tw = 0.85 + 0.15 * sin(uTime * (1.0 + h * 3.0) + h * 40.0);
+  vec3 tint = mix(vec3(1.0, 0.85, 0.7), vec3(0.75, 0.85, 1.0), hash13(c + 9.1));
+  return tint * b * mag * tw;
+}
+
+void main(){
+  vec2 uv = vUv + uOffset;
+  vec2 ndc = uv * 2.0 - 1.0;
+  vec3 dir = normalize(uFwd + ndc.x * uTan.x * uRight + ndc.y * uTan.y * uUp);
+
+  vec3 sky;
+  if (dir.y >= 0.0){
+    sky = skyLookup(dir);
+  } else {
+    // Sotto l'orizzonte: foschia che sfuma in un suolo scuro
+    vec3 hz = skyLookup(normalize(vec3(dir.x, 0.0005, dir.z)));
+    // Con cielo coperto la foschia all'orizzonte prende il grigio delle nubi
+    vec3 ambTop = (skyLookup(vec3(0.0, 1.0, 0.0)) * 0.6 + skyLookup(normalize(vec3(uSunDir.z, 0.25, -uSunDir.x))) * 0.4) * 1.6;
+    vec3 oc = ambTop * 0.5 * (1.0 - uDark * 0.75) + uGroundAmb + uSunColor * 0.012;
+    hz = mix(hz, oc, uOvercast);
+    sky = mix(hz, uGroundCol, smoothstep(0.0, 0.06, -dir.y));
+  }
+  // Inquinamento luminoso: bagliore arancio verso l'orizzonte
+  sky += uCity * (0.25 + 0.75 * exp(-max(dir.y, 0.0) * 7.0)) + uNightSky;
+
+  // Sole: disco con oscuramento al bordo e alone ottico
+  float mu = dot(dir, uSunDir);
+  float ang = acos(clamp(mu, -1.0, 1.0));
+  const float SUN_R = 0.00465 * 1.3;
+  vec3 sun = vec3(0.0);
+  if (dir.y > -0.003){
+    float r = ang / SUN_R;
+    if (r < 1.0){
+      float limb = 1.0 - 0.6 * (1.0 - sqrt(1.0 - r * r));
+      sun += uSunDisk * limb * 2.0e3;
+    }
+    float aa = max(ang, SUN_R);
+    sun += uSunDisk * (0.6 / (1.0 + pow(aa / SUN_R, 2.6)) + 0.0025 / (aa * aa * 900.0 + 0.02));
+  }
+
+  vec3 stars = starField(dir) * uStars * step(0.0, dir.y);
+
+  // Riproiezione: la direzione attuale viene proiettata nella camera del buffer delle nubi;
+  // poi la nube che ora si trova in P viene cercata dove era all'ultimo ricalcolo (P - spostamento).
+  // Così la vista può ruotare con continuità e le nubi muoversi fluide tra un ricalcolo e l'altro.
+  vec2 cuv = toBuf(projC(dir));
+  float cd = texture(uCloudDepth, cuv).r;
+  if (cd > 0.0 && dir.y > -0.01){
+    vec3 S = dir * cd - vec3(uWindDelta.x, 0.0, uWindDelta.y);
+    if (dot(S, uCFwd) > 1e-3) cuv = toBuf(projC(S));
+  }
+  vec4 cl = texture(uClouds, cuv);
+  float T = dir.y < -0.01 ? 1.0 : cl.a;
+  vec3 Lc = dir.y < -0.01 ? vec3(0.0) : cl.rgb;
+
+  vec3 col = (sky + stars) * T + sun * T * smoothstep(0.03, 0.6, T) + Lc;
+  // Città riflessa dalle nubi di notte
+  col += uCity * (1.0 - T) * 0.6;
+  // Lampo: illumina l'interno delle nubi
+  col += uFlash * vec3(0.75, 0.8, 1.0) * ((1.0 - T) * 3.0 + 0.4);
+
+  // Nebbia e cortina di precipitazione
+  // Colore della nebbia uniforme, non dipendente dalla direzione (niente colonne di luce)
+  vec3 hzc = skyLookup(vec3(0.0, 1.0, 0.0)) * 0.5 + skyLookup(normalize(vec3(-uSunDir.x, 0.08, -uSunDir.z))) * 0.5;
+  float l = dot(hzc, vec3(0.2126, 0.7152, 0.0722));
+  vec3 fogCol = (mix(vec3(l), hzc, 0.35) * 1.6 + uCity * 1.5);
+  float fogAmt = uFog * (0.8 + 0.2 * (1.0 - smoothstep(0.0, 0.6, dir.y)));
+  col = mix(col, fogCol, clamp(fogAmt, 0.0, 0.92));
+  float rv = uRainVeil * (0.4 + 0.6 * (1.0 - smoothstep(0.0, 0.5, dir.y)));
+  col = mix(col, fogCol * 0.75, clamp(rv, 0.0, 0.8));
+
+  col = aces(col * uExposure);
+  col = toSrgb(col);
+  col += (hash12(gl_FragCoord.xy + uTime) - 0.5) / 255.0;   // dithering contro le bande
+  fragColor = vec4(col, 1.0);
+}`;
+
+/* =========================================================================
+   DOM E STATO
+   ========================================================================= */
+const glCanvas = document.querySelector('#gl');
+const fxCanvas = document.querySelector('#fx');
+const fx = fxCanvas.getContext('2d');
+const noticeEl = document.querySelector('#notice');
+const clockEl = document.querySelector('#clock');
+const phaseEl = document.querySelector('#phase');
+const slider = document.querySelector('#time');
+const liveBtn = document.querySelector('#live');
+const panel = document.querySelector('#panel');
+const toggleBtn = document.querySelector('#toggle');
+const orientBtn = document.querySelector('#orient');
+const sunTimesEl = document.querySelector('#suntimes');
+const wxSelect = document.querySelector('#weather');
+const wxStatusEl = document.querySelector('#wxstatus');
+
+const reducedMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+let W = 1, H = 1, dpr = 1, horizonY = 1;
+let manual = null;
+let wxMode = (() => {
+  const saved = storage.get('cielo.meteo');
+  return saved === 'reale' || Object.prototype.hasOwnProperty.call(WX_PRESETS, saved) ? saved : 'reale';
+})();
+let weather = Object.assign({}, BASE_WX), view = null, cam = null;
+let renderKey = '', timeKey = '', dayKey = '', seedCover = 0.35;   // renderKey = stato (meteo, ora scelta, dimensioni)
+let windOffset = [0, 0], windVel = [0, 0];       // km e km/s
+let cloudsDirty = true;                          // ricalcolo immediato delle nubi (azione dell'utente)
+let userYaw = 0;
+let lastGl = 0, lastOverlay = 0, rafId = 0, timerId = 0, forceFrame = false;
+const startTime = performance.now();
+const tilt = { on: false, x: 0, y: 0, tx: 0, ty: 0, base: null, gotEvent: false };
+
+/* =========================================================================
+   WEBGL
+   ========================================================================= */
+const gl = glCanvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, premultipliedAlpha: false });
+const glOk = !!gl && !!gl.getExtension('EXT_color_buffer_float');
+
+function showNotice(text) { noticeEl.textContent = text; noticeEl.style.display = 'block'; }
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+
+function program(fsSrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const loc = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) {
+    const info = gl.getActiveUniform(p, i);
+    loc[info.name] = gl.getUniformLocation(p, info.name);
+  }
+  return { p, loc };
+}
+
+/** Imposta uniform per nome, deducendo il tipo dal valore. I nomi assenti (ottimizzati via) sono ignorati. */
+function setU(prog, name, v) {
+  const l = prog.loc[name];
+  if (l == null) return;
+  if (typeof v === 'number') gl.uniform1f(l, v);
+  else if (v.length === 2) gl.uniform2f(l, v[0], v[1]);
+  else if (v.length === 3) gl.uniform3f(l, v[0], v[1], v[2]);
+}
+
+function makeTarget(w, h) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { tex, fbo, w, h };
+}
+
+function freeTarget(t) {
+  if (!t) return;
+  gl.deleteTexture(t.tex);
+  if (t.depthTex) gl.deleteTexture(t.depthTex);
+  gl.deleteFramebuffer(t.fbo);
+}
+
+/** Target delle nubi: colore+trasmittanza (RGBA16F) e distanza (R16F), scritti insieme. */
+function makeCloudTarget(w, h) {
+  const t = makeTarget(w, h);
+  const depthTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, depthTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, w, h, 0, gl.RED, gl.HALF_FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, depthTex, 0);
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('Framebuffer delle nubi incompleto');
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  t.depthTex = depthTex;
+  return t;
+}
+
+/* ----- Rumore 3D periodico: R = Perlin-Worley (forma), G = Worley fine (erosione) ----- */
+function hashInt(x, y, z, s) {
+  let h = Math.imul(x, 0x27d4eb2d) ^ Math.imul(y, 0x165667b1) ^ Math.imul(z, 0x9e3779b1) ^ Math.imul(s, 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+  h ^= h >>> 15;
+  return (h >>> 0) / 4294967296;
+}
+
+function buildNoise3D(N) {
+  const data = new Uint8Array(N * N * N * 2);
+  // Punti caratteristici di Worley per ogni frequenza
+  const freqs = [4, 8, 16, 32];
+  const pts = freqs.map((f, fi) => {
+    const a = new Float32Array(f * f * f * 3);
+    for (let z = 0; z < f; z++) for (let y = 0; y < f; y++) for (let x = 0; x < f; x++) {
+      const i = ((z * f + y) * f + x) * 3;
+      a[i] = hashInt(x, y, z, 11 + fi); a[i + 1] = hashInt(x, y, z, 23 + fi); a[i + 2] = hashInt(x, y, z, 37 + fi);
+    }
+    return a;
+  });
+  const worley = (u, v, w, fi) => {
+    const f = freqs[fi], P = pts[fi];
+    const X = u * f, Y = v * f, Z = w * f;
+    const cx = Math.floor(X), cy = Math.floor(Y), cz = Math.floor(Z);
+    let best = 9;
+    for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const gx = cx + dx, gy = cy + dy, gz = cz + dz;
+      const wx = ((gx % f) + f) % f, wy = ((gy % f) + f) % f, wz = ((gz % f) + f) % f;
+      const i = ((wz * f + wy) * f + wx) * 3;
+      const ox = gx + P[i] - X, oy = gy + P[i + 1] - Y, oz = gz + P[i + 2] - Z;
+      const d = ox * ox + oy * oy + oz * oz;
+      if (d < best) best = d;
+    }
+    return 1 - clamp(Math.sqrt(best), 0, 1);       // invertito: "nuvoloso" dove vicino ai punti
+  };
+  const vnoise = (u, v, w, f, s) => {
+    const X = u * f, Y = v * f, Z = w * f;
+    const ix = Math.floor(X), iy = Math.floor(Y), iz = Math.floor(Z);
+    let fx = X - ix, fy = Y - iy, fz = Z - iz;
+    fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy); fz = fz * fz * (3 - 2 * fz);
+    const h = (a, b, c) => hashInt(((a % f) + f) % f, ((b % f) + f) % f, ((c % f) + f) % f, s);
+    const l = (a, b, t) => a + (b - a) * t;
+    return l(
+      l(l(h(ix, iy, iz), h(ix + 1, iy, iz), fx), l(h(ix, iy + 1, iz), h(ix + 1, iy + 1, iz), fx), fy),
+      l(l(h(ix, iy, iz + 1), h(ix + 1, iy, iz + 1), fx), l(h(ix, iy + 1, iz + 1), h(ix + 1, iy + 1, iz + 1), fx), fy), fz);
+  };
+  for (let z = 0; z < N; z++) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const u = (x + 0.5) / N, v = (y + 0.5) / N, w = (z + 0.5) / N;
+    const w4 = worley(u, v, w, 0), w8 = worley(u, v, w, 1), w16 = worley(u, v, w, 2), w32 = worley(u, v, w, 3);
+    const perlin = vnoise(u, v, w, 4, 1) * 0.5 + vnoise(u, v, w, 8, 2) * 0.25 + vnoise(u, v, w, 16, 3) * 0.125 + vnoise(u, v, w, 32, 4) * 0.0625;
+    const pn = perlin / 0.9375;
+    const wfbm = w4 * 0.625 + w8 * 0.25 + w16 * 0.125;
+    const pw = clamp((pn - (wfbm - 1)) / (2 - wfbm), 0, 1);       // remap(perlin, -(1-worley), 1, 0, 1)
+    const det = w8 * 0.625 + w16 * 0.25 + w32 * 0.125;
+    const i = ((z * N + y) * N + x) * 2;
+    data[i] = Math.round(pw * 255);
+    data[i + 1] = Math.round(det * 255);
+  }
+  // Equalizzazione del canale forma: valori distribuiti uniformemente, così una soglia
+  // di copertura c lascia nuvoloso circa la frazione c del volume
+  const count = N * N * N, vals = new Float32Array(count);
+  for (let k = 0; k < count; k++) vals[k] = data[k * 2] + hashInt(k, 5, 9, 77) * 0.99;   // rompe i pari merito
+  const order = Array.from({ length: count }, (_, k) => k).sort((a, b) => vals[a] - vals[b]);
+  for (let r = 0; r < count; r++) data[order[r] * 2] = Math.round(r / (count - 1) * 255);
+  return data;
+}
+
+let progSky, progClouds, progComp, vao, noiseTex, skyLut;
+/*
+  Nubi a doppio buffer: "front" è quello mostrato; "back" viene ricalcolato a strisce,
+  una per frame, con vento e camera fissati all'inizio del ricalcolo. Quando è completo
+  i due si scambiano. Così nessun frame contiene il calcolo intero (niente scatti).
+*/
+const clouds = { front: null, back: null, frontWind: [0, 0], frontCam: null, job: null, lastStart: 0 };
+const SKY_W = 192, SKY_H = 128, NOISE_N = 64;
+
+function initGL() {
+  progSky = program(FS_SKYLUT);
+  progClouds = program(FS_CLOUDS);
+  progComp = program(FS_COMPOSITE);
+  vao = gl.createVertexArray();
+  skyLut = makeTarget(SKY_W, SKY_H);
+  noiseTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_3D, noiseTex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage3D(gl.TEXTURE_3D, 0, gl.RG8, NOISE_N, NOISE_N, NOISE_N, 0, gl.RG, gl.UNSIGNED_BYTE, buildNoise3D(NOISE_N));
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, p, gl.REPEAT);
+}
+
+function draw(target) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.fbo : null);
+  gl.viewport(0, 0, target ? target.w : glCanvas.width, target ? target.h : glCanvas.height);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+function bindTex(prog, name, unit, tex, target3d) {
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(target3d ? gl.TEXTURE_3D : gl.TEXTURE_2D, tex);
+  if (prog.loc[name] != null) gl.uniform1i(prog.loc[name], unit);
+}
+
+/* =========================================================================
+   CAMERA E PARAMETRI DI SCENA
+   ========================================================================= */
+function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+function norm(a) { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+
+function computeCamera(sunAzS, elev) {
+  const portrait = H >= W;
+  const tLong = Math.tan(CONFIG.maxFovDeg * DEG / 2);
+  const tanY = portrait ? tLong : tLong * H / W;
+  const tanX = portrait ? tLong * W / H : tLong;
+  // Inclinazione verso l'alto tale che l'orizzonte cada appena sopra il pannello
+  const yh = 1 - 2 * horizonY / H;
+  const pitch = Math.atan(-yh * tanY) / DEG;
+  // Rotazione: di giorno verso il sole, di notte verso la finestra
+  const rel = wrapDeg(sunAzS - CONFIG.facingAzimuth);
+  const follow = CONFIG.followSun ? clamp(rel, -110, 110) * 0.85 * smooth(-10, -1, elev) : 0;
+  const yaw = 180 + CONFIG.facingAzimuth + follow + userYaw;
+  const fwd = dirFromAzEl(yaw, pitch);
+  const right = norm(cross(fwd, [0, 1, 0]));
+  const up = cross(right, fwd);
+  return { fwd, right, up, tanX, tanY, yaw, pixAngle: 2 * tanY / (H * dpr) };
+}
+
+/*
+  Esposizione (EV, log2) in funzione dell'altezza del sole, misurata sul rendering in modo che la
+  luminosità media dell'immagine (0–255) segua l'ora:
+  sereno:  ≥10° ≈ 175 · 5° 160 · 0° 118 · −4° 68 · −6° 48 · −9° 30 · −12° 20 · notte 17
+  coperto: 30° ≈ 144 · 10° 136 · 5° 115 · 0° 80 · −4° 45 · −6° 36 · −9° 30 · −12° 28 · notte 26
+  Prima l'esposizione "apriva" di notte come una fotocamera e la notte risultava più chiara del crepuscolo.
+*/
+const EV_CLEAR = [[-90, -0.57], [-18, -0.57], [-15, -0.45], [-12, -0.23], [-9, 0.72], [-6, 1.98], [-4, 1.86],
+  [-2, 0.82], [0, -0.01], [2, -0.25], [5, -0.43], [10, -0.6], [90, -0.6]];
+const EV_OVERCAST = [[-90, -1.17], [-18, -1.17], [-15, -1.11], [-12, -1.02], [-9, -0.77], [-6, -0.01], [-4, 0.43],
+  [-2, 0.2], [0, 0.33], [2, 0.16], [5, 0.04], [10, -0.25], [20, -0.78], [30, -1.08], [90, -1.08]];
+function interpTable(t, x) {
+  if (x <= t[0][0]) return t[0][1];
+  for (let i = 0; i < t.length - 1; i++) {
+    const [x0, y0] = t[i], [x1, y1] = t[i + 1];
+    if (x <= x1) return mix(y0, y1, (x - x0) / (x1 - x0));
+  }
+  return t[t.length - 1][1];
+}
+
+function viewFor(date, w) {
+  const s = solarPosition(date);
+  const elev = s.alt;  const sunDir = dirFromAzEl(180 + s.az, s.apparentAlt);
+  const oc = smooth(0.6, 1, w.cover);
+  const haze = 1 + w.fog * 5 + w.rain * 6 + w.snow * 8 + oc * 1.5;
+  const sunGround = transmittance(0.2, sunDir, haze).map(v => v * ATM.SUN);
+  const cloudBase = mix(1.4, 0.9, oc), cloudTop = mix(4.2, 3.4, oc);
+  const sunCloud = transmittance((cloudBase + cloudTop) / 2, sunDir, haze).map(v => v * ATM.SUN);
+  const msT = transmittance(3, sunDir, haze);
+  const night = 1 - smooth(-14, -4, elev);
+  // Bagliore della città (Milano): più forte con cielo coperto o nebbia, che lo riflettono
+  const cityK = night * (0.3 + 0.9 * oc + 0.8 * w.fog);
+  const city = [0.0090, 0.0072, 0.0057].map(v => v * cityK);
+  const sunHoriz = Math.max(sunDir[1], 0);
+  // La città illumina la base delle nubi con qualunque copertura (grigio-arancio di notte)
+  // L'illuminazione pubblica si accende verso il tramonto: la luce sulle nubi cresce già nel crepuscolo
+  const cityOn = 1 - smooth(-9, -2, elev);
+  const cityCloud = [0.040, 0.032, 0.025].map(v => v * cityOn * (1 + 0.5 * w.fog));
+  const groundAmb = [0, 1, 2].map(k => sunCloud[k] * sunHoriz * 0.05 + cityCloud[k]);
+  // Esposizione automatica, come una fotocamera: aperta di notte, chiusa di giorno
+  // Esposizione da tabella calibrata: la luminosità dell'immagine scende in modo continuo
+  // dal giorno alla notte (vedi EV_CLEAR / EV_OVERCAST). Correzioni extra per nebbia e nubi più scure.
+  const ev = mix(interpTable(EV_CLEAR, elev), interpTable(EV_OVERCAST, elev), oc)
+    - 0.4 * w.fog * (1 - night) - 0.6 * Math.max(0, w.dark - 0.25 * oc);
+  return {
+    elev, morning: s.az < 0, az: s.az, sunDir, haze, sunGround, sunCloud, cloudBase, cloudTop,
+    msAmb: msT.map(v => v * ATM.SUN * 0.03),
+    night, city, groundAmb,
+    nightSky: [0.0036, 0.0052, 0.0104].map(v => v * night),
+    groundCol: [0.012, 0.012, 0.014].map(v => v * (0.2 + 0.8 * smooth(-6, 10, elev)) * 20),
+    exposure: Math.pow(2, ev),
+    stars: night * (1 - smooth(0.7, 1, w.cover) * 0.95) * (1 - w.fog * 0.9) * (1 - w.rain * 0.8) * (1 - w.snow * 0.8) * 0.5,
+    hazeDist: 45 / (1 + (haze - 1) * 0.5),
+    cirrus: 0.3 * (0.2 + 0.8 * smooth(0.05, 0.4, w.cover)) * (1 - smooth(0.7, 1, w.cover)) * (1 - w.fog),
+    fog: w.fog,
+    rainVeil: w.rain * 0.35 + w.snow * 0.3,
+    daylight: smooth(-7, 14, elev)
+  };
+}
+
+function phaseLabel(v) {
+  let label;
+  if (v.elev < -12) label = 'Notte';
+  else if (v.elev < -0.833) label = v.morning ? 'Aurora' : 'Crepuscolo';
+  else if (v.elev < 8) label = v.morning ? 'Sole basso, mattino' : 'Sole basso, sera';
+  else label = 'Giorno';
+  return `${label}, sole a ${Math.round(v.elev)}°`;
+}
+
+/*
+  La copertura meteo (frazione di cielo coperto vista da terra) non coincide con la
+  frazione di volume nuvoloso: guardando di sbieco lo strato si vedono più nubi.
+  Tabella misurata sul rendering: copertura visibile → soglia dello shader.
+*/
+const COVER_CURVE = [[0, 0], [0.2, 0.05], [0.4, 0.1], [0.6, 0.2], [0.7, 0.3], [0.88, 0.5], [0.95, 0.7], [1, 1]];
+function coverToShader(c) {
+  for (let i = 0; i < COVER_CURVE.length - 1; i++) {
+    const [x0, y0] = COVER_CURVE[i], [x1, y1] = COVER_CURVE[i + 1];
+    if (c <= x1) return mix(y0, y1, (c - x0) / (x1 - x0));
+  }
+  return 1;
+}
+
+function windVectorKmS(w) {
+  const toAz = (w.cloudWindDir + 180) % 360;          // verso cui soffia
+  const d = dirFromAzEl(toAz, 0);
+  const speed = w.cloudWind / 3600 * CONFIG.windTimeScale;
+  return [d[0] * speed, d[2] * speed];
+}
+
+/* =========================================================================
+   PASSATE DI RENDERING
+   ========================================================================= */
+function renderSkyLut() {
+  gl.useProgram(progSky.p);
+  setU(progSky, 'uSunDir', view.sunDir);
+  setU(progSky, 'uHaze', view.haze);
+  setU(progSky, 'uSunIllum', ATM.SUN);
+  setU(progSky, 'uMsAmb', view.msAmb);
+  draw(skyLut);
+}
+
+function margins() { return [CONFIG.parallaxPx / W, CONFIG.parallaxPx / H]; }
+
+function camSnapshot(c) { return { fwd: c.fwd.slice(), right: c.right.slice(), up: c.up.slice(), tanX: c.tanX, tanY: c.tanY, yaw: c.yaw }; }
+
+function setCloudUniforms(wind, c) {
+  gl.useProgram(progClouds.p);
+  bindTex(progClouds, 'uSkyLut', 0, skyLut.tex);
+  bindTex(progClouds, 'uNoise', 1, noiseTex, true);
+  setU(progClouds, 'uSunDir', view.sunDir);
+  setU(progClouds, 'uHaze', view.haze);
+  setU(progClouds, 'uFwd', c.fwd);
+  setU(progClouds, 'uRight', c.right);
+  setU(progClouds, 'uUp', c.up);
+  setU(progClouds, 'uTan', [c.tanX, c.tanY]);
+  setU(progClouds, 'uMargin', margins());
+  setU(progClouds, 'uSunColor', view.sunCloud);
+  setU(progClouds, 'uGroundAmb', view.groundAmb);
+  setU(progClouds, 'uNightAmb', view.nightSky.map(v => v * 1.5));
+  setU(progClouds, 'uSunUp', smooth(-2, 5, view.elev));
+  setU(progClouds, 'uTwi', 1 - smooth(-4, 0, view.elev));
+  setU(progClouds, 'uCover', coverToShader(clamp(weather.cover, 0, 1)));
+  setU(progClouds, 'uDark', weather.dark);
+  setU(progClouds, 'uBase', view.cloudBase);
+  setU(progClouds, 'uTop', view.cloudTop);
+  setU(progClouds, 'uCirrus', view.cirrus);
+  setU(progClouds, 'uHazeDist', view.hazeDist);
+  setU(progClouds, 'uWind', wind);
+  setU(progClouds, 'uDesat', smooth(0.6, 1, weather.cover) * smooth(2, 10, view.elev) * 0.6);
+}
+
+/** Ricalcolo immediato e completo (dopo un'azione dell'utente). Annulla un ricalcolo a strisce in corso. */
+function renderCloudsNow(now) {
+  setCloudUniforms(windOffset, cam);
+  draw(clouds.front);
+  clouds.frontWind = windOffset.slice();
+  clouds.frontCam = camSnapshot(cam);
+  clouds.job = null;
+  clouds.lastStart = now;
+}
+
+function startCloudJob(now) {
+  clouds.job = { wind: windOffset.slice(), cam: camSnapshot(cam), strip: 0 };
+  clouds.lastStart = now;
+}
+
+/** Calcola una striscia del buffer di riserva; all'ultima scambia i buffer. */
+function stepCloudJob() {
+  const j = clouds.job;
+  if (!j) return;
+  const t = clouds.back, K = CONFIG.cloudStrips;
+  const y0 = Math.floor(t.h * j.strip / K), y1 = Math.floor(t.h * (j.strip + 1) / K);
+  setCloudUniforms(j.wind, j.cam);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(0, y0, t.w, y1 - y0);
+  draw(t);
+  gl.disable(gl.SCISSOR_TEST);
+  if (++j.strip >= K) {
+    [clouds.front, clouds.back] = [clouds.back, clouds.front];
+    clouds.frontWind = j.wind;
+    clouds.frontCam = j.cam;
+    clouds.job = null;
+  }
+}
+
+function renderComposite(now, ox, oy) {
+  const fc = clouds.frontCam;
+  gl.useProgram(progComp.p);
+  bindTex(progComp, 'uSkyLut', 0, skyLut.tex);
+  bindTex(progComp, 'uClouds', 1, clouds.front.tex);
+  bindTex(progComp, 'uCloudDepth', 2, clouds.front.depthTex);
+  setU(progComp, 'uWindDelta', [windOffset[0] - clouds.frontWind[0], windOffset[1] - clouds.frontWind[1]]);
+  setU(progComp, 'uCFwd', fc.fwd);
+  setU(progComp, 'uCRight', fc.right);
+  setU(progComp, 'uCUp', fc.up);
+  setU(progComp, 'uCTan', [fc.tanX, fc.tanY]);
+  setU(progComp, 'uSunDir', view.sunDir);
+  setU(progComp, 'uHaze', view.haze);
+  setU(progComp, 'uFwd', cam.fwd);
+  setU(progComp, 'uRight', cam.right);
+  setU(progComp, 'uUp', cam.up);
+  setU(progComp, 'uTan', [cam.tanX, cam.tanY]);
+  setU(progComp, 'uOffset', [ox / W, -oy / H]);
+  setU(progComp, 'uMargin', margins());
+  setU(progComp, 'uSunDisk', view.sunGround);
+  setU(progComp, 'uExposure', view.exposure);
+  setU(progComp, 'uStars', view.stars);
+  setU(progComp, 'uTime', reducedMotion ? 0 : (now - startTime) / 1000);
+  setU(progComp, 'uPixAngle', cam.pixAngle);
+  setU(progComp, 'uFlash', flashIntensity(now) * 0.06);
+  setU(progComp, 'uFog', view.fog);
+  setU(progComp, 'uRainVeil', view.rainVeil);
+  setU(progComp, 'uCity', view.city);
+  setU(progComp, 'uNightSky', view.nightSky);
+  setU(progComp, 'uGroundCol', view.groundCol);
+  setU(progComp, 'uOvercast', smooth(0.6, 1, weather.cover));
+  setU(progComp, 'uDark', weather.dark);
+  setU(progComp, 'uGroundAmb', view.groundAmb);
+  setU(progComp, 'uSunColor', view.sunCloud);
+  draw(null);
+}
+
+/* =========================================================================
+   PRECIPITAZIONI E FULMINI (canvas 2D sovrapposto)
+   ========================================================================= */
+const precip = { drops: [], flakes: [], slant: 0, rainCol: [205, 215, 230], snowCol: [255, 255, 255], alpha: 1 };
+
+function windRightComponent(w) {
+  const toAz = (w.windDir + 180) % 360;
+  return Math.cos((toAz - (cam ? cam.yaw + 90 : 270)) * DEG);
+}
+
+function syncParticles(v, w) {
+  const nR = Math.round(CONFIG.maxRainDrops * w.rain);
+  const nS = Math.round(CONFIG.maxSnowFlakes * w.snow);
+  const R = Math.random;
+  while (precip.drops.length < nR) {
+    const z = R();
+    precip.drops.push({ x: R() * (W + 200) - 100, y: R() * H, z, speed: mix(700, 1500, z), len: mix(8, 22, z) * (0.6 + w.rain * 0.6) });
+  }
+  precip.drops.length = nR;
+  while (precip.flakes.length < nS) {
+    const z = R();
+    precip.flakes.push({ x: R() * (W + 100) - 50, y: R() * H, z, r: mix(0.8, 2.6, z), speed: mix(25, 90, z),
+      sway: mix(6, 18, z), f: 0.7 + R() * 0.8, p: R() * Math.PI * 2 });
+  }
+  precip.flakes.length = nS;
+  precip.slant = clamp(windRightComponent(w) * w.wind / 60, -0.45, 0.45);
+  precip.rainCol = blend([120, 130, 150], [205, 215, 230], v.daylight);
+  precip.snowCol = blend([170, 176, 190], [255, 255, 255], v.daylight);
+  precip.alpha = mix(0.7, 1, v.daylight);
+}
+
+function drawPrecip(dt, now) {
+  const { slant } = precip;
+  if (precip.drops.length) {
+    fx.lineCap = 'round';
+    for (const near of [false, true]) {
+      fx.beginPath();
+      for (const d of precip.drops) {
+        if ((d.z >= 0.5) !== near) continue;
+        if (dt) {
+          d.y += d.speed * dt;
+          d.x += d.speed * slant * dt;
+          if (d.y - d.len > H) { d.y = -Math.random() * 60; d.x = Math.random() * (W + 200) - 100; }
+          if (d.x < -100) d.x += W + 200; else if (d.x > W + 100) d.x -= W + 200;
+        }
+        fx.moveTo(d.x, d.y);
+        fx.lineTo(d.x - slant * d.len, d.y - d.len);
+      }
+      fx.strokeStyle = rgba(precip.rainCol, (near ? 0.42 : 0.22) * precip.alpha);
+      fx.lineWidth = near ? 1.3 : 0.8;
+      fx.stroke();
+    }
+  }
+  if (precip.flakes.length) {
+    for (const near of [false, true]) {
+      fx.beginPath();
+      for (const f of precip.flakes) {
+        if ((f.z >= 0.5) !== near) continue;
+        if (dt) {
+          f.y += f.speed * dt;
+          f.x += (f.speed * slant * 1.6 + Math.cos(now * 0.0013 * f.f + f.p) * f.sway) * dt;
+          if (f.y - f.r > H) { f.y = -Math.random() * 30; f.x = Math.random() * (W + 100) - 50; }
+          if (f.x < -50) f.x += W + 100; else if (f.x > W + 50) f.x -= W + 100;
+        }
+        fx.moveTo(f.x + f.r, f.y);
+        fx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+      }
+      fx.fillStyle = rgba(precip.snowCol, (near ? 0.9 : 0.55) * precip.alpha);
+      fx.fill();
+    }
+  }
+}
+
+/* Fulmini: al massimo 2 lampi per scarica e almeno 5 s tra le scariche (sotto la soglia WCAG). */
+const storm = { next: 0, strikeAt: -1e9, bolt: null };
+
+function makeBolt() {
+  const R = Math.random;
+  const main = [];
+  let x = W * (0.15 + R() * 0.7), y = horizonY * (0.08 + R() * 0.15);
+  main.push([x, y]);
+  while (y < horizonY) {
+    y += 8 + R() * 18;
+    x += (R() - 0.5) * 28;
+    main.push([x, Math.min(y, horizonY)]);
+  }
+  const branches = [];
+  const nb = 1 + Math.floor(R() * 3);
+  for (let b = 0; b < nb; b++) {
+    const start = main[Math.floor(R() * main.length * 0.7)];
+    let bx = start[0], by = start[1];
+    const dir = R() < 0.5 ? -1 : 1;
+    const pts = [[bx, by]];
+    const steps = 3 + Math.floor(R() * 5);
+    for (let s = 0; s < steps; s++) { by += 6 + R() * 14; bx += dir * (4 + R() * 14); pts.push([bx, by]); }
+    branches.push(pts);
+  }
+  return { main, branches };
+}
+
+function updateStorm(now) {
+  if (!weather.thunder || reducedMotion) { storm.next = 0; return; }
+  if (!storm.next) storm.next = now + 2500 + Math.random() * 6000;
+  if (now >= storm.next) {
+    storm.strikeAt = now;
+    storm.bolt = Math.random() < 0.55 ? makeBolt() : null;
+    storm.next = now + 5000 + Math.random() * 12000;
+  }
+}
+
+function flashIntensity(now) {
+  if (!weather.thunder || reducedMotion) return 0;
+  const t = now - storm.strikeAt;
+  if (t < 0 || t > 900) return 0;
+  return Math.exp(-t / 110) + (t > 160 ? 0.7 * Math.exp(-(t - 160) / 140) : 0);
+}
+
+function drawBolt(now, ox, oy) {
+  const t = now - storm.strikeAt;
+  if (!storm.bolt || t < 0 || t >= 260) return;
+  const a = 1 - t / 260;
+  const path = pts => { fx.beginPath(); pts.forEach(([x, y], i) => i ? fx.lineTo(x + ox, y + oy) : fx.moveTo(x + ox, y + oy)); };
+  fx.save();
+  fx.lineJoin = 'round';
+  fx.shadowColor = rgba([170, 190, 255], a);
+  fx.shadowBlur = 14;
+  fx.strokeStyle = rgba([238, 242, 255], a);
+  fx.lineWidth = 2;
+  path(storm.bolt.main); fx.stroke();
+  fx.lineWidth = 1;
+  for (const b of storm.bolt.branches) { path(b); fx.stroke(); }
+  fx.restore();
+}
+
+/* =========================================================================
+   DIMENSIONI
+   ========================================================================= */
+function resize() {
+  const rect = glCanvas.getBoundingClientRect();
+  W = Math.max(1, rect.width);
+  H = Math.max(1, rect.height);
+  dpr = Math.min(window.devicePixelRatio || 1, CONFIG.maxDpr);
+  glCanvas.width = Math.round(W * dpr);
+  glCanvas.height = Math.round(H * dpr);
+  fxCanvas.width = Math.round(W * dpr);
+  fxCanvas.height = Math.round(H * dpr);
+  fx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const pr = panel.getBoundingClientRect();
+  horizonY = clamp(pr.top - 10, H * 0.55, H * 0.92);
+
+  if (glOk) {
+    const m = margins();
+    const cw = Math.max(64, Math.round(glCanvas.width * (1 + 2 * m[0]) * CONFIG.cloudScale));
+    const ch = Math.max(64, Math.round(glCanvas.height * (1 + 2 * m[1]) * CONFIG.cloudScale));
+    freeTarget(clouds.front);
+    freeTarget(clouds.back);
+    clouds.front = makeCloudTarget(cw, ch);
+    clouds.back = makeCloudTarget(cw, ch);
+    clouds.job = null;
+    cloudsDirty = true;
+  }
+  // Le particelle NON vengono rigenerate: su telefono il ridimensionamento scatta anche
+  // quando compare o sparisce la barra del browser, e la neve "salterebbe". Quelle fuori
+  // dai nuovi bordi rientrano da sole al giro successivo.
+  renderKey = '';
+  requestRender();
+}
+
+/* =========================================================================
+   CICLO DI AGGIORNAMENTO
+   ========================================================================= */
+function dayKeyOf(d) { return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; }
+
+function currentDate() {
+  const now = new Date();
+  if (manual === null) return now;
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), Math.floor(manual / 60), manual % 60);
+}
+
+function updateWxStatus(date = currentDate()) {
+  let text;
+  if (wxMode !== 'reale') text = 'Simulazione';
+  else if (real.status === 'loading' && !real.current) text = 'Carico il meteo…';
+  else if (real.status === 'ok' || real.current) {
+    const w = weather;
+    const prefix = manual === null ? '' : `Previsione ${pad(date.getHours())}:00: `;
+    text = `${prefix}${w.desc || ''}` + (w.temp != null ? ` · ${Math.round(w.temp)} °C` : '')
+         + (w.wind != null ? ` · vento ${Math.round(w.wind)} km/h` : '');
+  } else text = 'Meteo reale non raggiungibile: nuvole casuali';
+  if (wxStatusEl.textContent !== text) wxStatusEl.textContent = text;
+}
+
+/*
+  Due livelli di cambiamento:
+  - stato (meteo, ora scelta con lo slider, dimensioni): ricalcolo immediato di tutto;
+  - tempo che scorre in ora reale (ogni 15 s): cielo aggiornato subito, nubi ricalcolate a
+    strisce in sottofondo, senza frame pesanti.
+  La camera invece si aggiorna a ogni frame, così la rotazione verso il sole è continua.
+*/
+function update(now) {
+  const date = currentDate();
+  const dKey = dayKeyOf(date);
+  if (dKey !== dayKey) {
+    dayKey = dKey;
+    const seed = date.getFullYear() * 372 + date.getMonth() * 31 + date.getDate();
+    seedCover = 0.1 + hashInt(seed, 3, 7, 1) * 0.5;
+    // Nuvole diverse ogni giorno; solo al primo avvio, così a mezzanotte il cielo non salta
+    if (!windOffset[0] && !windOffset[1]) windOffset = [hashInt(seed, 1, 1, 2) * 500, hashInt(seed, 2, 2, 3) * 500];
+    const t = computeSunTimes(date);
+    sunTimesEl.textContent = `Alba ${t.rise === null ? '--:--' : fmtMinutes(t.rise)} · Tramonto ${t.set === null ? '--:--' : fmtMinutes(t.set)}`;
+    renderKey = '';
+  }
+  maybeFetchWeather();
+
+  const s = solarPosition(date);
+  cam = computeCamera(s.az, s.alt);
+
+  const w = activeWeather(date);
+  const wxKey = [w.cover, w.rain, w.snow, w.fog, w.dark, w.thunder, w.wind, w.windDir].map(String).join(',');
+  const stateKey = `${dKey} ${W}x${H} ${horizonY} ${wxMode} ${wxKey} ${manual === null ? 'live' : 'm' + manual}`;
+  const tKey = manual === null ? `${date.getHours()}:${date.getMinutes()}:${Math.floor(date.getSeconds() / 15)}` : 'manual';
+  const stateChanged = stateKey !== renderKey;
+  if (stateChanged || tKey !== timeKey) {
+    renderKey = stateKey;
+    timeKey = tKey;
+    weather = w;
+    view = viewFor(date, w);
+    windVel = reducedMotion ? [0, 0] : windVectorKmS(w);
+    if (glOk) renderSkyLut();
+    if (stateChanged) {
+      cloudsDirty = true;
+      syncParticles(view, w);
+    } else if (!clouds.job) {
+      startCloudJob(now);
+    }
+    const mins = manual === null ? date.getHours() * 60 + date.getMinutes() : manual;
+    clockEl.textContent = fmtMinutes(mins);
+    if (manual === null) slider.value = mins;
+    const phase = phaseLabel(view);
+    phaseEl.textContent = (manual === null ? 'Ora reale · ' : 'Anteprima · ') + phase;
+    glCanvas.setAttribute('aria-label', `Cielo alle ${fmtMinutes(mins)}: ${phase}${w.desc ? ', ' + w.desc.toLowerCase() : ''}`);
+  }
+  updateWxStatus(date);
+
+  const k = 0.18;
+  tilt.x += ((tilt.on ? tilt.tx : 0) - tilt.x) * k;
+  tilt.y += ((tilt.on ? tilt.ty : 0) - tilt.y) * k;
+  if (!tilt.on && Math.abs(tilt.x) < 0.001 && Math.abs(tilt.y) < 0.001) tilt.x = tilt.y = 0;
+}
+
+function parallax() { return [-tilt.x * CONFIG.parallaxPx, -tilt.y * CONFIG.parallaxPx]; }
+
+/** Frame WebGL: vento, nubi (immediate o a strisce), composizione. */
+function glFrame(now, dt) {
+  windOffset[0] += windVel[0] * dt;
+  windOffset[1] += windVel[1] * dt;
+  if (!glOk) return;
+  if (cloudsDirty || !clouds.frontCam) {
+    renderCloudsNow(now);
+    cloudsDirty = false;
+  } else {
+    const moving = windVel[0] !== 0 || windVel[1] !== 0;
+    const camTurned = Math.abs(wrapDeg(cam.yaw - clouds.frontCam.yaw)) > 1.5;
+    if (!clouds.job && (camTurned || (moving && now - clouds.lastStart > CONFIG.cloudRefreshMs))) startCloudJob(now);
+    stepCloudJob();
+  }
+  if (weather.thunder) updateStorm(now);
+  const [ox, oy] = parallax();
+  renderComposite(now, ox, oy);
+}
+
+/** Overlay 2D: neve, pioggia e fulmine, disegnati a ogni aggiornamento dello schermo. */
+function overlayFrame(now, dt) {
+  fx.clearRect(0, 0, W, H);
+  if (weather.thunder) { const [ox, oy] = parallax(); drawBolt(now, ox, oy); }
+  drawPrecip(dt, now);
+}
+
+function precipActive() { return precip.drops.length > 0 || precip.flakes.length > 0 || weather.thunder; }
+
+function needsAnimation() {
+  if (tilt.on || tilt.x !== 0 || tilt.y !== 0 || dragging || clouds.job) return true;
+  if (reducedMotion) return false;
+  return weather.cover > 0.01 || precipActive() || (view && view.stars > 0.0005);
+}
+
+/*
+  Due cadenze indipendenti:
+  - WebGL a 20 fps (30 con movimento, trascinamento o temporale): il cielo cambia lentamente;
+  - neve e pioggia a ogni refresh dello schermo, con il tempo reale trascorso: moto continuo.
+  La tolleranza di 4 ms evita che, per le piccole variazioni dei tempi del browser,
+  un frame venga saltato e la cadenza oscilli tra 33 e 50 ms (era una causa di scatti).
+*/
+function loop(now) {
+  rafId = 0;
+  const glInterval = (tilt.on || dragging || weather.thunder) ? 33 : 50;
+  const glDue = forceFrame || now - lastGl >= glInterval - 4;
+  if (glDue) {
+    const dt = reducedMotion ? 0 : Math.min(0.25, lastGl ? (now - lastGl) / 1000 : 0);
+    forceFrame = false;
+    lastGl = now;
+    update(now);
+    glFrame(now, dt);
+  }
+  if (glDue || precipActive()) {
+    const dt = reducedMotion ? 0 : Math.min(0.25, lastOverlay ? (now - lastOverlay) / 1000 : 0);
+    lastOverlay = now;
+    overlayFrame(now, dt);
+  }
+  schedule();
+}
+
+function schedule() {
+  cancelAnimationFrame(rafId); rafId = 0;
+  clearTimeout(timerId); timerId = 0;
+  if (needsAnimation()) rafId = requestAnimationFrame(loop);
+  else {
+    // Cielo fermo: nessun frame fino al prossimo scatto di 15 secondi
+    const ms = 15000 - (Date.now() % 15000) + 50;
+    timerId = setTimeout(() => { rafId = requestAnimationFrame(loop); }, ms);
+  }
+}
+
+function requestRender() {
+  forceFrame = true;
+  cancelAnimationFrame(rafId);
+  clearTimeout(timerId); timerId = 0;
+  rafId = requestAnimationFrame(loop);
+}
+
+/* =========================================================================
+   CONTROLLI
+   ========================================================================= */
+function setLive(isLive) { liveBtn.setAttribute('aria-pressed', String(isLive)); }
+
+slider.addEventListener('input', () => { manual = +slider.value; setLive(false); requestRender(); });
+liveBtn.addEventListener('click', () => { manual = null; setLive(true); requestRender(); });
+toggleBtn.addEventListener('click', () => {
+  panel.classList.toggle('hidden');
+  toggleBtn.textContent = panel.classList.contains('hidden') ? 'Mostra controlli' : 'Nascondi controlli';
+});
+wxSelect.value = wxMode;
+wxSelect.addEventListener('change', () => {
+  wxMode = wxSelect.value;
+  storage.set('cielo.meteo', wxMode);
+  storm.next = 0;
+  renderKey = '';
+  requestRender();
+});
+
+/* ----- Trascinamento orizzontale: guarda a destra e a sinistra; doppio tocco per tornare ----- */
+let dragging = false, dragX = 0, downX = 0, lastTapAt = 0;
+fxCanvas.addEventListener('pointerdown', e => {
+  dragging = true;
+  dragX = downX = e.clientX;
+  fxCanvas.setPointerCapture(e.pointerId);
+  requestRender();
+});
+fxCanvas.addEventListener('pointermove', e => {
+  if (!dragging || !cam) return;
+  const dx = e.clientX - dragX;
+  if (dx === 0) return;
+  const degPerPx = 2 * Math.atan(cam.tanX) / DEG / W;
+  userYaw = clamp(userYaw - dx * degPerPx, -120, 120);
+  dragX = e.clientX;
+  cloudsDirty = true;            // durante il trascinamento le nubi seguono subito la vista
+});
+const endDrag = e => {
+  if (!dragging) return;
+  dragging = false;
+  // Doppio tocco (anche su telefono, dove dblclick non è affidabile): torna alla vista iniziale
+  if (e && e.type === 'pointerup' && Math.abs(e.clientX - downX) < 8) {
+    if (e.timeStamp - lastTapAt < 320) { userYaw = 0; cloudsDirty = true; lastTapAt = 0; }
+    else lastTapAt = e.timeStamp;
+  }
+  requestRender();
+};
+fxCanvas.addEventListener('pointerup', endDrag);
+fxCanvas.addEventListener('pointercancel', endDrag);
+
+/* ----- Movimento del telefono ----- */
+function screenAngle() {
+  let a = 0;
+  if (screen.orientation && typeof screen.orientation.angle === 'number') a = screen.orientation.angle;
+  else if (typeof window.orientation === 'number') a = window.orientation;
+  return ((a % 360) + 360) % 360;
+}
+function setOrientLabel(t) { orientBtn.textContent = t; }
+
+orientBtn.addEventListener('click', async () => {
+  if (tilt.on) { tilt.on = false; setOrientLabel('Movimento: OFF'); requestRender(); return; }
+  if (typeof DeviceOrientationEvent === 'undefined') { setOrientLabel('Sensore assente'); return; }
+  try {
+    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const res = await DeviceOrientationEvent.requestPermission();
+      if (res !== 'granted') { setOrientLabel('Permesso negato'); return; }
+    }
+  } catch (e) { setOrientLabel('Permesso negato'); return; }
+  tilt.on = true; tilt.base = null; tilt.gotEvent = false; tilt.tx = tilt.ty = 0;
+  setOrientLabel('Movimento: ON');
+  requestRender();
+  setTimeout(() => {
+    if (tilt.on && !tilt.gotEvent) {
+      tilt.on = false;
+      setOrientLabel(window.isSecureContext ? 'Sensore assente' : 'Serve HTTPS');
+      requestRender();
+    }
+  }, 1500);
+});
+
+addEventListener('deviceorientation', e => {
+  if (!tilt.on || e.beta == null || e.gamma == null) return;
+  tilt.gotEvent = true;
+  let x, y;
+  switch (screenAngle()) {
+    case 90:  x = e.beta;   y = -e.gamma; break;
+    case 180: x = -e.gamma; y = -e.beta;  break;
+    case 270: x = -e.beta;  y = e.gamma;  break;
+    default:  x = e.gamma;  y = e.beta;
+  }
+  if (!tilt.base) tilt.base = { x, y };
+  tilt.tx = clamp((x - tilt.base.x) / 25, -1, 1);
+  tilt.ty = clamp((y - tilt.base.y) / 25, -1, 1);
+});
+const recalibrate = () => { tilt.base = null; };
+if (screen.orientation && screen.orientation.addEventListener) screen.orientation.addEventListener('change', recalibrate);
+addEventListener('orientationchange', recalibrate);
+
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { lastGl = 0; lastOverlay = 0; requestRender(); } });
+
+if (glOk) {
+  glCanvas.addEventListener('webglcontextlost', e => { e.preventDefault(); showNotice('La grafica è stata sospesa dal sistema. Ricarica la pagina.'); });
+}
+
+/* =========================================================================
+   AVVIO
+   ========================================================================= */
+function start() {
+  if (!glOk) {
+    showNotice('Questo dispositivo non supporta WebGL2 con rendering in virgola mobile, necessario per la resa fotografica. Usa la versione V5.');
+  } else {
+    try {
+      initGL();
+    } catch (err) {
+      console.error(err);
+      showNotice('Errore nella preparazione della grafica: ' + err.message);
+      return;
+    }
+  }
+  if (typeof ResizeObserver === 'function') new ResizeObserver(resize).observe(glCanvas);
+  else addEventListener('resize', resize);
+  resize();
+}
+// Lascia disegnare il pannello prima del calcolo del rumore 3D (qualche centinaio di ms)
+showNotice('Preparo le nuvole…');
+setTimeout(() => { noticeEl.style.display = 'none'; start(); }, 30);
+</script>
+</body>
+</html>
