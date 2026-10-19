@@ -262,7 +262,11 @@ function wmoToWeather(rec) {
   const [desc, fx] = WMO[rec.code] || ['Condizioni non classificate', {}];
   const w = Object.assign({}, BASE_WX, fx);
   w.cover = clamp((rec.cloud ?? 50) / 100, 0, 1);
-  if (w.rain || w.snow || w.thunder) w.cover = Math.max(w.cover, 0.95);
+  w.cloudLow = rec.cloudLow == null ? null : clamp(rec.cloudLow / 100, 0, 1);
+  w.cloudMid = rec.cloudMid == null ? null : clamp(rec.cloudMid / 100, 0, 1);
+  w.cloudHigh = rec.cloudHigh == null ? null : clamp(rec.cloudHigh / 100, 0, 1);
+  // Non trasformare automaticamente pioggia o rovesci in una copertura totale:
+  // Open-Meteo fornisce già la copertura effettiva.
   if (rec.wind != null) w.wind = rec.wind;
   if (rec.windDir != null) w.windDir = rec.windDir;
   w.desc = desc;
@@ -275,7 +279,7 @@ const real = { status: 'idle', current: null, hourly: new Map(), fetchedAt: 0, r
 async function fetchWeather() {
   real.status = 'loading';
   updateWxStatus();
-  const fields = 'temperature_2m,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m';
+  const fields = 'temperature_2m,weather_code,cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,wind_speed_10m,wind_direction_10m';
   // Il vento in quota (850 hPa ≈ 1500 m) è quello che muove davvero le nubi; l'API lo fornisce solo orario
   const upper = 'wind_speed_850hPa,wind_direction_850hPa';
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${CONFIG.latitude}&longitude=${CONFIG.longitude}`
@@ -289,6 +293,9 @@ async function fetchWeather() {
     const toRec = (src, i) => ({
       code: i == null ? src.weather_code : src.weather_code[i],
       cloud: i == null ? src.cloud_cover : src.cloud_cover[i],
+      cloudLow: i == null ? src.cloud_cover_low : src.cloud_cover_low?.[i],
+      cloudMid: i == null ? src.cloud_cover_mid : src.cloud_cover_mid?.[i],
+      cloudHigh: i == null ? src.cloud_cover_high : src.cloud_cover_high?.[i],
       temp: i == null ? src.temperature_2m : src.temperature_2m[i],
       wind: i == null ? src.wind_speed_10m : src.wind_speed_10m[i],
       windDir: i == null ? src.wind_direction_10m : src.wind_direction_10m[i],
@@ -541,7 +548,7 @@ void main(){
   // Al crepuscolo la luce arriva soprattutto dal chiarore all'orizzonte dalla parte del sole
   // (solo con il sole già sotto l'orizzonte: prima quel punto contiene l'alone del sole e abbaglierebbe)
   ambTop += skyLookup(normalize(vec3(uSunDir.x, 0.15, uSunDir.z))) * 1.1 * uTwi;
-  float ovc = smoothstep(0.6, 1.0, uCover);
+  float ovc = smoothstep(0.78, 1.0, uCover);
 
   vec3 L = vec3(0.0);
   float T = 1.0, dSum = 0.0, wSum = 0.0;
@@ -1114,7 +1121,9 @@ function setCloudUniforms(wind, c) {
   setU(progClouds, 'uNightAmb', view.nightSky.map(v => v * 1.5));
   setU(progClouds, 'uSunUp', smooth(-2, 5, view.elev));
   setU(progClouds, 'uTwi', 1 - smooth(-4, 0, view.elev));
-  setU(progClouds, 'uCover', coverToShader(clamp(weather.cover, 0, 1)));
+  // La nube volumetrica bassa non deve assorbire anche cirri e nubi medie.
+  const lowCover = weather.cloudLow == null ? weather.cover : weather.cloudLow;
+  setU(progClouds, 'uCover', coverToShader(clamp(lowCover, 0, 1)));
   setU(progClouds, 'uDark', weather.dark);
   setU(progClouds, 'uBase', view.cloudBase);
   setU(progClouds, 'uTop', view.cloudTop);
