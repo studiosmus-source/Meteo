@@ -2,6 +2,8 @@ name: Build Android APK
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -28,7 +30,8 @@ jobs:
           ANDROID_HOME: /home/runner/android-sdk
           ANDROID_SDK_ROOT: /home/runner/android-sdk
         run: gradle :app:assembleDebug --stacktrace
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Meteo-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+      - name: Publish APK as GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "meteo-build-${{ github.run_number }}" app/build/outputs/apk/debug/app-debug.apk --title "Meteo Android build ${{ github.run_number }}" --notes "APK Android debug firmato per installazione e test." --target "${{ github.sha }}" --prerelease
