@@ -91,7 +91,8 @@ input{width:100%;margin:12px 0 3px;accent-color:var(--accent)}
    ========================================================================= */
 const appParams = new URLSearchParams(location.search);
 const wallpaperMode = appParams.get('wallpaper') === '1';
-if (wallpaperMode) { document.documentElement.classList.add('wallpaper-mode'); const style = document.createElement('style'); style.textContent = '#toggle, #panel { display:none !important; }'; document.head.appendChild(style); }
+if (wallpaperMode) { document.documentElement.style.background = '#111'; }
+if (wallpaperMode) { document.documentElement.classList.add('wallpaper-mode'); const style = document.createElement('style'); style.textContent = '#toggle, #panel { display:none !important; } html.wallpaper-mode::after { content:""; position:fixed; inset:0; background:#85858c; z-index:99999; pointer-events:none; } html.wallpaper-mode.sky-ready::after { display:none; }'; document.head.appendChild(style); }
 const CONFIG = {
   latitude: Math.max(-90,Math.min(90,Number(appParams.get('lat')) || 45.47)),
   longitude: Math.max(-180,Math.min(180,Number(appParams.get('lon')) || 9.19)),
@@ -967,7 +968,7 @@ function computeCamera(sunAzS, elev) {
   const tanY = portrait ? tLong : tLong * H / W;
   const tanX = portrait ? tLong * W / H : tLong;
   // Inquadratura tutta verso il cielo: anche il bordo inferiore resta sopra l'orizzonte.
-  const pitch = Math.atan(tanY) / DEG + 8;
+  const pitch = Math.atan(tanY) / DEG + 4 + (wallpaperMode ? 2.2 * Math.sin(Date.now() / 210000) : 0);
   // Rotazione: di giorno verso il sole, di notte verso la finestra
   const rel = wrapDeg(sunAzS - CONFIG.facingAzimuth);
   const follow = CONFIG.followSun ? clamp(rel, -110, 110) * 0.85 * smooth(-10, -1, elev) : 0;
@@ -1434,6 +1435,7 @@ function update(now) {
 function parallax() { return [-tilt.x * CONFIG.parallaxPx, -tilt.y * CONFIG.parallaxPx]; }
 
 /** Frame WebGL: vento, nubi (immediate o a strisce), composizione. */
+let wallpaperFirstFrame = false;
 function glFrame(now, dt) {
   windOffset[0] += windVel[0] * dt;
   windOffset[1] += windVel[1] * dt;
@@ -1450,6 +1452,10 @@ function glFrame(now, dt) {
   if (weather.thunder) updateStorm(now);
   const [ox, oy] = parallax();
   renderComposite(now, ox, oy);
+  if (wallpaperMode && !wallpaperFirstFrame) {
+    wallpaperFirstFrame = true;
+    requestAnimationFrame(() => { document.documentElement.classList.add('sky-ready'); });
+  }
 }
 
 /** Overlay 2D: neve, pioggia e fulmine, disegnati a ogni aggiornamento dello schermo. */
