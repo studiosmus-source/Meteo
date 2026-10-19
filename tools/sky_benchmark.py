@@ -5,7 +5,7 @@ Install: pip install playwright pillow; python -m playwright install chromium
 Run: python tools/sky_benchmark.py --html app/src/main/assets/sky.html --out benchmark/current
 Compare: python tools/sky_benchmark.py --html ... --out benchmark/new --baseline benchmark/current/metrics.json
 """
-import argparse, json, math, statistics
+import argparse, json, math, statistics, shutil
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
@@ -46,6 +46,7 @@ def main():
     ap.add_argument("--html", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--baseline")
+    ap.add_argument("--chromium", help="Path to an installed Chromium executable")
     ap.add_argument("--references", help="Directory with numbered 01..18 reference JPG/PNG images")
     ap.add_argument("--wait-ms",type=int,default=3500)
     args=ap.parse_args()
@@ -53,7 +54,7 @@ def main():
     source=Path(args.html).resolve().as_uri()
     report={"source":str(Path(args.html)), "scenarios":{}, "failures":[]}
     with sync_playwright() as p:
-        browser=p.chromium.launch(headless=True,args=["--enable-webgl","--use-gl=angle","--use-angle=swiftshader","--enable-unsafe-swiftshader"])
+        browser=p.chromium.launch(headless=True,executable_path=args.chromium or shutil.which("chromium") or None,args=["--enable-webgl","--use-gl=angle","--use-angle=swiftshader","--enable-unsafe-swiftshader"])
         page=browser.new_page(viewport={"width":393,"height":852},device_scale_factor=1)
         errors=[]
         page.on("pageerror",lambda exc: errors.append(str(exc)))
