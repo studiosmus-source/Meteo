@@ -91,6 +91,10 @@ input{width:100%;margin:12px 0 3px;accent-color:var(--accent)}
    ========================================================================= */
 const appParams = new URLSearchParams(location.search);
 const wallpaperMode = appParams.get('wallpaper') === '1';
+// Modalità banco prova: data e meteo fissati via URL; nessuna chiamata meteo live.
+const benchmarkDate = appParams.get('benchDate');
+const benchmarkWeather = appParams.get('benchWeather');
+const benchmarkMode = !!(benchmarkDate && benchmarkWeather);
 if (wallpaperMode) { document.documentElement.style.background = '#111'; }
 if (wallpaperMode) { document.documentElement.classList.add('wallpaper-mode'); const style = document.createElement('style'); style.textContent = '#toggle, #panel { display:none !important; } html.wallpaper-mode::after { content:""; position:fixed; inset:0; background:#85858c; z-index:99999; pointer-events:none; } html.wallpaper-mode.sky-ready::after { display:none; }'; document.head.appendChild(style); }
 const CONFIG = {
@@ -790,11 +794,12 @@ const sunTimesEl = document.querySelector('#suntimes');
 const wxSelect = document.querySelector('#weather');
 const wxStatusEl = document.querySelector('#wxstatus');
 
-const reducedMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+const reducedMotion = benchmarkMode || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
 
 let W = 1, H = 1, dpr = 1, horizonY = 1;
 let manual = null;
 let wxMode = (() => {
+  if (benchmarkMode && Object.prototype.hasOwnProperty.call(WX_PRESETS, benchmarkWeather)) return benchmarkWeather;
   const saved = wallpaperMode ? 'reale' : storage.get('cielo.meteo');
   return saved === 'reale' || Object.prototype.hasOwnProperty.call(WX_PRESETS, saved) ? saved : 'reale';
 })();
@@ -1216,7 +1221,7 @@ function renderComposite(now, ox, oy) {
   setU(progComp, 'uGroundCol', view.groundCol);
   setU(progComp, 'uOvercast', smooth(0.6, 1, weather.cover));
   setU(progComp, 'uDark', weather.dark);
-  setU(progComp, 'uDebugClouds', new URLSearchParams(location.search).get('debugClouds') === '1' ? 1 : 0);
+  setU(progComp, 'uDebugClouds', appParams.get('debugClouds') === '1' ? 1 : 0);
   setU(progComp, 'uGroundAmb', view.groundAmb);
   setU(progComp, 'uSunColor', view.sunCloud);
   draw(null);
@@ -1396,6 +1401,7 @@ function resize() {
 function dayKeyOf(d) { return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; }
 
 function currentDate() {
+  if (benchmarkMode) { const fixed = new Date(benchmarkDate); if (!Number.isNaN(fixed.getTime())) return fixed; }
   const now = new Date();
   if (manual === null) return now;
   return new Date(now.getFullYear(), now.getMonth(), now.getDate(), Math.floor(manual / 60), manual % 60);
@@ -1434,7 +1440,7 @@ function update(now) {
     sunTimesEl.textContent = `Alba ${t.rise === null ? '--:--' : fmtMinutes(t.rise)} · Tramonto ${t.set === null ? '--:--' : fmtMinutes(t.set)}`;
     renderKey = '';
   }
-  maybeFetchWeather();
+  if (!benchmarkMode) maybeFetchWeather();
 
   const s = solarPosition(date);
   cam = computeCamera(s.az, s.alt);
