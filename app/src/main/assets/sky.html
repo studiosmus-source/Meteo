@@ -513,7 +513,7 @@ float cloudDensity(vec3 q, float h, bool detail){
   float broad = texture(uNoise, vec3(w.x / 18.0, 0.43, w.z / 18.0)).g;
   float cell = texture(uNoise, vec3(w.x / 5.5, 0.71, w.z / 5.5)).r;
   float detailCell = texture(uNoise, vec3(w.x / 2.1, 0.32, w.z / 2.1)).g;
-  float relief = (broad - 0.5) * 0.38 + (cell - 0.5) * 0.34 + (detailCell - 0.5) * 0.09;
+  float relief = (broad - 0.5) * 0.42 + (cell - 0.5) * 0.39 + (detailCell - 0.5) * 0.14;
   float bottom = 0.13 + relief;
   float upper = 0.90 + (broad - 0.5) * 0.12;
   float deck = smoothstep(bottom - 0.035, bottom + 0.055, h)
@@ -529,7 +529,7 @@ float cloudDensity(vec3 q, float h, bool detail){
   float threshold = mix(0.63, 0.25, cov);
   float ordinary = smoothstep(threshold - 0.10, threshold + 0.16, field);
   ordinary *= smoothstep(0.0, 0.15, h) * (1.0 - smoothstep(0.72, 1.0, h));
-  float textureDeck = 0.40 + 0.28 * cell + 0.20 * broad + 0.12 * detailCell;
+  float textureDeck = 0.26 + 0.34 * cell + 0.25 * broad + 0.15 * detailCell;
   float denseDeck = deck * textureDeck;
   float d = mix(ordinary, denseDeck, over);
   if (d <= 0.0 || !detail) return clamp(d, 0.0, 1.0);
