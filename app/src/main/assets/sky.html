@@ -515,14 +515,24 @@ float cloudDensity(vec3 q, float h, bool detail){
   float deck = smoothstep(bottom - 0.035, bottom + 0.055, h)
              * (1.0 - smoothstep(upper - 0.10, upper + 0.04, h));
   float cu = smoothstep(0.0, 0.1, h) * (1.0 - smoothstep(0.45, 1.0, h));
-  float base = texture(uNoise, vec3(w.x / 12.0, w.y / 5.0, w.z / 12.0)).r;
-  float ordinary = clamp((base * cu - (1.0 - cov)) / max(cov, 0.001), 0.0, 1.0);
+  // Domain warp a tre scale: spezza le sagome lisce e ripetitive.
+  vec3 warp = vec3(broad - 0.5, detailCell - 0.5, cell - 0.5);
+  vec3 wp = w + warp * vec3(4.0, 0.9, 4.0);
+  float base = texture(uNoise, vec3(wp.x / 8.0, wp.y / 3.8, wp.z / 8.0)).r;
+  float folds = texture(uNoise, vec3(wp.x / 2.6, wp.y / 1.9, wp.z / 2.6)).g;
+  float wisps = texture(uNoise, wp / 0.95).r;
+  float field = (base * 0.67 + folds * 0.24 + wisps * 0.09) * cu;
+  float threshold = mix(0.63, 0.25, cov);
+  float ordinary = smoothstep(threshold - 0.10, threshold + 0.16, field);
+  ordinary *= smoothstep(0.0, 0.15, h) * (1.0 - smoothstep(0.72, 1.0, h));
   float textureDeck = 0.40 + 0.28 * cell + 0.20 * broad + 0.12 * detailCell;
   float denseDeck = deck * textureDeck;
   float d = mix(ordinary, denseDeck, over);
   if (d <= 0.0 || !detail) return clamp(d, 0.0, 1.0);
-  float erosion = texture(uNoise, w / 1.8).g;
-  d *= mix(0.88 + 0.12 * erosion, 0.76 + 0.24 * erosion, over);
+  float erosion = texture(uNoise, wp / 1.1).g;
+  float fine = texture(uNoise, wp / 0.42).r;
+  d *= mix(0.48 + 0.52 * erosion, 0.62 + 0.38 * erosion, over);
+  d *= 0.78 + 0.22 * fine;
   return clamp(d, 0.0, 1.0);
 }
 
