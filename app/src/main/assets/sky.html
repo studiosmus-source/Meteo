@@ -556,9 +556,10 @@ void main(){
   // le nubi nelle zone libere durante la riproiezione
   float depthOut = 0.5 * (t0 + t1);
   if (t0 >= 150.0){
-    float expT = 1.0 - smoothstep(0.55, 0.97, uCover);
-    L = (1.0 - expT) * mix(overcastColor(ambTop), skyLookup(dir), 0.25 * (1.0 - ovc));
-    T = expT;
+    // Nubi oltre la distanza di campionamento: nessuna lastra grigia artificiale.
+    // Lascia emergere il cielo atmosferico, anziché inventare una copertura opaca.
+    L = vec3(0.0);
+    T = 1.0;
   } else {
     const int N = 64;
     float dt = (t1 - t0) / float(N);
@@ -615,11 +616,9 @@ void main(){
     // niente bagliore solare nella foschia lontana
     vec3 airCol = mix(skyLookup(dir), overcastColor(ambTop), ovc);
     L = L * aer + (1.0 - T) * (1.0 - aer) * airCol;
-    float farFade = smoothstep(150.0, 70.0, t0);
-    float expT = 1.0 - smoothstep(0.55, 0.97, uCover);          // opacità attesa delle nubi lontane
-    vec3 farL = (1.0 - expT) * mix(overcastColor(ambTop), skyLookup(dir), 0.25 * (1.0 - ovc));
-    L = mix(farL, L, farFade);
-    T = mix(expT, T, farFade);
+    // Conserva il risultato volumetrico anche nelle direzioni più basse:
+    // il vecchio farFade trasformava la trama lontana in una lastra grigia.
+    // La prospettiva aerea è già applicata sopra tramite aer.
   }
 
   // Cirri: strato sottile a 9 km
