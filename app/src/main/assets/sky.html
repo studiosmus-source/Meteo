@@ -89,9 +89,12 @@ input{width:100%;margin:12px 0 3px;accent-color:var(--accent)}
 /* =========================================================================
    CONFIGURAZIONE
    ========================================================================= */
+const appParams = new URLSearchParams(location.search);
+const wallpaperMode = appParams.get('wallpaper') === '1';
+if (wallpaperMode) { document.documentElement.classList.add('wallpaper-mode'); const style = document.createElement('style'); style.textContent = '#toggle, #panel { display:none !important; }'; document.head.appendChild(style); }
 const CONFIG = {
-  latitude: 45.47,
-  longitude: 9.19,
+  latitude: Math.max(-90,Math.min(90,Number(appParams.get('lat')) || 45.47)),
+  longitude: Math.max(-180,Math.min(180,Number(appParams.get('lon')) || 9.19)),
   facingAzimuth: 0,        // direzione della finestra in gradi dal Sud: 0 = Sud, -90 = Est, +90 = Ovest
   followSun: false,        // false = finestra ferma (consigliato). true = la vista ruota col sole, ma spostando
                            // l'ora le nuvole scorrono e al tramonto/all'alba il verso si inverte
@@ -102,7 +105,7 @@ const CONFIG = {
   cloudStrips: 4,          // il ricalcolo è diviso in 4 strisce, una per frame: nessun frame pesante
   windTimeScale: 8,        // le nuvole si muovono 8 volte più veloci del vero: a velocità reale sembrano ferme
   parallaxPx: 24,
-  weatherRefreshMin: 15,
+  weatherRefreshMin: 5,
   weatherRetryMin: 5,
   maxRainDrops: 420,
   maxSnowFlakes: 260
@@ -753,7 +756,7 @@ const reducedMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: 
 let W = 1, H = 1, dpr = 1, horizonY = 1;
 let manual = null;
 let wxMode = (() => {
-  const saved = storage.get('cielo.meteo');
+  const saved = wallpaperMode ? 'reale' : storage.get('cielo.meteo');
   return saved === 'reale' || Object.prototype.hasOwnProperty.call(WX_PRESETS, saved) ? saved : 'reale';
 })();
 let weather = Object.assign({}, BASE_WX), view = null, cam = null;
