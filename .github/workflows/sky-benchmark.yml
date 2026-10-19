@@ -1,0 +1,39 @@
+name: Sky benchmark (30 scenes)
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'app/src/main/assets/sky.html'
+      - 'tools/sky_benchmark.py'
+      - '.github/workflows/sky-benchmark.yml'
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install benchmark dependencies
+        run: |
+          python -m pip install playwright pillow
+          python -m playwright install --with-deps chromium
+      - name: Render all deterministic scenarios
+        run: python tools/sky_benchmark.py --html app/src/main/assets/sky.html --out benchmark/current --wait-ms 1500
+      - name: Validate capture count and runtime errors
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('benchmark/current/metrics.json'))
+          print('Scenes:',len(d['scenarios']),'Failures:',len(d['failures']))
+          for error in d['failures']: print(error)
+          assert len(d['scenarios']) == 30, 'Missing scenarios'
+          assert not d['failures'], 'Browser errors during rendering'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sky-benchmark-30-scenes
+          path: benchmark/current/
+          retention-days: 14
