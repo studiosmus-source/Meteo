@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#08152d">
-<title>Finestra sul cielo — Fotografico V6.8</title>
+<title>Finestra sul cielo — Fotografico V8.1</title>
 <style>
 :root{
   color-scheme:dark;
@@ -36,7 +36,7 @@ button,select{border:1px solid var(--btn-border);border-radius:9px;padding:7px 1
   background:var(--btn-bg);font:inherit;cursor:pointer;flex-shrink:0}
 select option{background:var(--option-bg);color:var(--fg)}
 button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-#live[aria-pressed="true"]{background:var(--btn-active);border-color:var(--accent)}
+#live[aria-pressed="true"],#diagBtn[aria-pressed="true"]{background:var(--btn-active);border-color:var(--accent)}
 input{width:100%;margin:12px 0 3px;accent-color:var(--accent)}
 .hint{font-size:11px;opacity:.75;display:flex;justify-content:space-between;gap:8px;font-variant-numeric:tabular-nums}
 .wx{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px}
@@ -66,7 +66,7 @@ input{width:100%;margin:12px 0 3px;accent-color:var(--accent)}
   </div>
   <input id="time" type="range" min="0" max="1439" step="1" aria-label="Ora di prova">
   <div class="hint"><span>00:00</span><span id="suntimes">Alba --:-- · Tramonto --:--</span><span>23:59</span></div>
-  <div class="hint" style="justify-content:flex-end;margin-top:2px"><span id="version">V6.8</span></div>
+  <div class="hint" style="justify-content:flex-end;margin-top:2px"><span id="version">V8.1</span></div>
   <div class="wx">
     <label for="weather">Meteo</label>
     <select id="weather">
@@ -81,6 +81,9 @@ input{width:100%;margin:12px 0 3px;accent-color:var(--accent)}
       <option value="neve">Neve</option>
     </select>
     <span id="wxstatus" aria-live="polite"></span>
+  </div>
+  <div class="wx">
+    <button id="diagBtn" type="button" aria-pressed="false">Diagnostica</button>
   </div>
 </section>
 <script>
@@ -108,7 +111,10 @@ const CONFIG = {
   cloudScale: 1 / 3,       // risoluzione delle nuvole volumetriche rispetto allo schermo
   cloudRefreshMs: 0,       // 0 = ricalcolo continuo a strisce (un buffer completo ogni 4 frame)
   cloudStrips: 4,          // il ricalcolo è diviso in 4 strisce, una per frame: nessun frame pesante
-  windTimeScale: 2.5,      // movimento nuvole più naturale; lieve accelerazione per percepibilità sul wallpaper
+  windTimeScale: 1,        // V8: velocità naturale: le nubi viaggiano col vento reale in quota (850 hPa)
+  minCloudWindKmh: 0,      // V8: nessun minimo artificiale: con aria calma le nubi quasi ferme, come dal vero
+  cloudEvolveKmS: 0.004,   // V8: evoluzione naturale delle forme (un cumulo cambia aspetto in alcuni minuti)
+  moonScale: 2.2,          // V7.2: Luna ingrandita rispetto al vero (0,5°) per essere leggibile sullo schermo   // V7: evoluzione delle forme (le nubi crescono e si sfaldano anche senza vento)
   parallaxPx: 24,
   weatherRefreshMin: 5,
   weatherRetryMin: 5,
@@ -188,6 +194,112 @@ function computeSunTimes(date) {
 function dirFromAzEl(azNorthDeg, elDeg) {
   const A = azNorthDeg * DEG, E = elDeg * DEG;
   return [Math.sin(A) * Math.cos(E), Math.sin(E), -Math.cos(A) * Math.cos(E)];
+}
+
+/* =========================================================================
+   V7.2 — ROTAZIONE TERRESTRE, STELLE REALI E LUNA
+   Riferimento equatoriale (J2000, precessione trascurata: ~0,4°): x verso AR 0h, z verso il polo nord.
+   ========================================================================= */
+function julianDay(date) { return date.getTime() / 86400000 + 2440587.5; }
+
+/** Tempo siderale locale, gradi. */
+function localSiderealDeg(date) {
+  const d = julianDay(date) - 2451545.0;
+  return (((280.46061837 + 360.98564736629 * d + CONFIG.longitude) % 360) + 360) % 360;
+}
+
+/** Vettore equatoriale → direzione nel mondo (x = Est, y = alto, z = Sud) all'istante dato. */
+function eqToWorld(v, lstDeg) {
+  const th = lstDeg * DEG, lat = CONFIG.latitude * DEG;
+  const [a, b, c] = v;
+  const cH = a * Math.cos(th) + b * Math.sin(th);      // cosδ·cosH
+  const sH = a * Math.sin(th) - b * Math.cos(th);      // cosδ·sinH
+  return [-sH, Math.cos(lat) * cH + Math.sin(lat) * c, Math.sin(lat) * cH - Math.cos(lat) * c];
+}
+
+/** Matrice 3×3 (per colonne, come la vuole WebGL) che porta il riferimento equatoriale nel mondo. */
+function eqMatrix(date) {
+  const lst = localSiderealDeg(date);
+  return [...eqToWorld([1, 0, 0], lst), ...eqToWorld([0, 1, 0], lst), ...eqToWorld([0, 0, 1], lst)];
+}
+
+function raDecToVec(raHours, decDeg) {
+  const a = raHours * 15 * DEG, d = decDeg * DEG;
+  return [Math.cos(d) * Math.cos(a), Math.cos(d) * Math.sin(a), Math.sin(d)];
+}
+
+/*
+  Stelle più luminose visibili dall'Italia: [AR (ore), Dec (°), magnitudine, colore 0 bianco / 1 azzurro / 2 arancio-rosso].
+  Coordinate J2000 arrotondate (errore < 0,1°). In città si vedono queste e poche altre.
+*/
+const BRIGHT_STARS = [
+  [6.752, -16.72, -1.46, 0], [14.261, 19.18, -0.05, 2], [18.616, 38.78, 0.03, 1], [5.278, 46.00, 0.08, 0],
+  [5.242, -8.20, 0.13, 1], [7.655, 5.22, 0.34, 0], [5.919, 7.41, 0.50, 2], [19.846, 8.87, 0.77, 0],
+  [4.599, 16.51, 0.85, 2], [16.490, -26.43, 0.96, 2], [13.420, -11.16, 0.97, 1], [7.755, 28.03, 1.14, 2],
+  [22.961, -29.62, 1.16, 0], [20.690, 45.28, 1.25, 1], [10.140, 11.97, 1.35, 1], [6.977, -28.97, 1.50, 1],
+  [7.577, 31.89, 1.58, 0], [17.560, -37.10, 1.62, 1], [5.419, 6.35, 1.64, 1], [5.438, 28.61, 1.65, 1],
+  [5.604, -1.20, 1.69, 1], [5.679, -1.94, 1.77, 1], [12.900, 55.96, 1.77, 0], [11.062, 61.75, 1.79, 2],
+  [3.405, 49.86, 1.79, 0], [7.140, -26.39, 1.83, 0], [18.403, -34.38, 1.85, 1], [13.792, 49.31, 1.86, 1],
+  [5.992, 44.95, 1.90, 0], [6.629, 16.40, 1.93, 0], [2.530, 89.26, 1.98, 0], [6.378, -17.96, 1.98, 1],
+  [9.460, -8.66, 1.98, 2], [2.120, 23.46, 2.00, 2], [10.333, 19.84, 2.08, 2], [0.727, -17.99, 2.04, 2],
+  [18.921, -26.30, 2.05, 1], [17.582, 12.56, 2.08, 0], [1.162, 35.62, 2.05, 2], [0.140, 29.09, 2.06, 1],
+  [14.845, 74.16, 2.08, 2], [5.796, -9.67, 2.09, 1], [3.136, 40.96, 2.10, 1], [2.065, 42.33, 2.10, 2],
+  [11.818, 14.57, 2.13, 0], [0.945, 60.72, 2.20, 1], [20.370, 40.26, 2.23, 0], [0.675, 56.54, 2.24, 2],
+  [17.943, 51.49, 2.23, 2], [5.533, -0.30, 2.23, 1], [13.399, 54.93, 2.23, 0], [15.578, 26.71, 2.23, 0],
+  [0.153, 59.15, 2.27, 0], [11.031, 56.38, 2.37, 0], [14.750, 27.07, 2.37, 2], [21.736, 9.88, 2.38, 2],
+  [23.063, 28.08, 2.42, 2], [11.897, 53.69, 2.44, 0], [21.310, 62.59, 2.45, 0], [20.770, 33.97, 2.48, 2],
+  [23.079, 15.21, 2.49, 0], [3.038, 4.09, 2.54, 2], [11.235, 20.52, 2.56, 0], [3.791, 24.11, 2.87, 1]
+];
+const BRIGHT_EQ = BRIGHT_STARS.map(([ra, dec, mag, tint]) => {
+  const v = raDecToVec(ra, dec);
+  // Flusso relativo (Vega = 1), limitato per non saturare; il colore va nella parte intera
+  const flux = Math.min(4, Math.pow(10, -0.4 * mag));
+  return [v[0], v[1], v[2], tint * 10 + flux];
+});
+const BRIGHT_FLAT = new Float32Array(BRIGHT_EQ.flat());
+
+/*
+  Luna — teoria semplificata (termini principali di Meeus, cap. 47): errore tipico ~0,3°,
+  più che sufficiente per posizione e fase a schermo. Include la parallasse topocentrica (~1°).
+*/
+function moonState(date, sunDirWorld) {
+  const d = julianDay(date) - 2451545.0;
+  const r = x => (((x % 360) + 360) % 360) * DEG;
+  const L = r(218.316 + 13.176396 * d);    // longitudine media
+  const M = r(134.963 + 13.064993 * d);    // anomalia media della Luna
+  const F = r(93.272 + 13.229350 * d);     // argomento della latitudine
+  const D = r(297.850 + 12.190749 * d);    // elongazione media
+  const Ms = r(357.529 + 0.98560028 * d);  // anomalia media del Sole
+  const lon = L + DEG * (6.289 * Math.sin(M) + 1.274 * Math.sin(2 * D - M) + 0.658 * Math.sin(2 * D)
+            + 0.214 * Math.sin(2 * M) - 0.186 * Math.sin(Ms) - 0.114 * Math.sin(2 * F));
+  const lat = DEG * (5.128 * Math.sin(F) + 0.280 * Math.sin(M + F) + 0.278 * Math.sin(M - F) + 0.173 * Math.sin(2 * D - F));
+  const eps = 23.4393 * DEG;
+  const x = Math.cos(lat) * Math.cos(lon);
+  const y = Math.cos(eps) * Math.cos(lat) * Math.sin(lon) - Math.sin(eps) * Math.sin(lat);
+  const z = Math.sin(eps) * Math.cos(lat) * Math.sin(lon) + Math.cos(eps) * Math.sin(lat);
+  const lst = localSiderealDeg(date);
+  const geo = eqToWorld([x, y, z], lst);
+  // Distanza ~60,3 raggi terrestri: l'osservatore sta un raggio "più in alto" del centro della Terra
+  const dir = norm([geo[0] * 60.3, geo[1] * 60.3 - 1, geo[2] * 60.3]);
+  const pole = eqToWorld([0, 0, 1], lst);
+  const up = norm(pole.map((p, i) => p - dir[i] * (pole[0] * dir[0] + pole[1] * dir[1] + pole[2] * dir[2])));
+  const cosElong = geo[0] * sunDirWorld[0] + geo[1] * sunDirWorld[1] + geo[2] * sunDirWorld[2];
+  const frac = (1 - cosElong) / 2;        // frazione illuminata del disco
+  const alt = Math.asin(clamp(dir[1], -1, 1)) / DEG;
+  return { dir, up, frac, alt, waxing: Math.sin(lon - (sunEclLon(d))) > 0 };
+}
+function sunEclLon(d) {
+  const M = (357.529 + 0.98560028 * d) * DEG;
+  return (280.459 + 0.98564736 * d) * DEG + DEG * (1.915 * Math.sin(M) + 0.020 * Math.sin(2 * M));
+}
+
+function moonPhaseName(m) {
+  const f = m.frac;
+  if (f < 0.03) return 'Luna nuova';
+  if (f > 0.97) return 'Luna piena';
+  if (Math.abs(f - 0.5) < 0.06) return m.waxing ? 'Primo quarto' : 'Ultimo quarto';
+  if (f < 0.5) return m.waxing ? 'Luna crescente' : 'Luna calante';
+  return m.waxing ? 'Gibbosa crescente' : 'Gibbosa calante';
 }
 
 /* =========================================================================
@@ -434,7 +546,7 @@ vec3 skyLookup(vec3 dir){
 // 1) Sky-view LUT: diffusione singola di Rayleigh + Mie + assorbimento dell'ozono
 const FS_SKYLUT = COMMON + `
 uniform float uSunIllum;
-uniform vec3 uMsAmb;
+uniform float uMsK;
 vec3 sunTrans(vec3 p){
   if (raySphere(p, uSunDir, RE).x > 0.0) return vec3(0.0);
   float tTop = raySphere(p, uSunDir, RA).y;
@@ -474,7 +586,11 @@ void main(){
     vec3 sR = BR * exp(-h / HR);
     float sM = BMS * uHaze * exp(-h / HM);
     vec3 ext = extinctionAt(h);
-    vec3 scat = (sR * pR + sM * pM) * sunTrans(p) * uSunIllum + (sR + sM) * uMsAmb;
+    // Diffusione multipla approssimata (V7): la luce che arriva da tutta l'atmosfera illuminata sopra
+    // il punto. Valutarla ad almeno 5 km di quota la mantiene viva nel crepuscolo, quando il sole
+    // illumina solo gli strati alti: senza, il cielo crepuscolare diventava bruno-violaceo e buio.
+    vec3 msT = sunTrans(normalize(p) * (RE + max(h, 5.0)));
+    vec3 scat = (sR * pR + sM * pM) * sunTrans(p) * uSunIllum + (sR + sM) * (msT * uSunIllum * uMsK);
     vec3 stepT = exp(-ext * dt);
     L += T * scat * (1.0 - stepT) / max(ext, vec3(1e-7));
     T *= stepT;
@@ -495,49 +611,70 @@ uniform float uSunUp;       // 1 con sole sopra l'orizzonte, 0 sotto
 uniform float uTwi;         // 1 con sole sotto −4°, 0 sopra 0°
 uniform float uCover, uDark, uBase, uTop, uCirrus, uHazeDist;
 uniform vec2 uWind;         // spostamento accumulato del vento, km
+uniform float uEvolve;      // V7: evoluzione accumulata delle forme (scorrimento verticale del rumore), km
+uniform vec3 uMoonDir, uMoonLight;   // V7.2: luce lunare diretta sulle nubi
 uniform float uDesat;       // le nubi spesse diffondono più volte la luce e la rendono neutra
 layout(location = 1) out vec4 fragDepth;   // distanza media delle nubi (km), per la riproiezione
 
 float remap(float v, float l0, float h0, float l1, float h1){ return l1 + (v - l0) * (h1 - l1) / (h0 - l0); }
 
+float gDetail = 1.0;   // V7: attenuazione del dettaglio fine con la distanza (anti-aliasing)
+
 float cloudDensity(vec3 q, float h, bool detail){
   if (h < 0.0 || h > 1.0) return 0.0;
-  vec3 w = q - vec3(uWind.x, 0.0, uWind.y);
-  // Variazione di copertura a grande scala, per non avere un cielo uniforme
-  float big = texture(uNoise, vec3(w.x / 70.0, w.z / 70.0, 0.37)).r;
-  float cov = clamp(uCover * (1.08 + (big - 0.5) * (0.28 + 1.3 * (1.0 - uCover))), 0.0, 1.0);
-  if (cov <= 0.001) return 0.0;
-  // Stratocumuli: la base delle nubi è una superficie tridimensionale ondulata.
-  // La copertura al 100% non deve trasformare la densità in una lastra opaca uniforme.
+  vec3 w = q - vec3(uWind.x, -uEvolve, uWind.y);
   float over = smoothstep(0.72, 0.97, uCover);
   float broad = texture(uNoise, vec3(w.x / 18.0, 0.43, w.z / 18.0)).g;
   float cell = texture(uNoise, vec3(w.x / 5.5, 0.71, w.z / 5.5)).r;
+
+  // --- Cumuli e nubi sparse (V7) ---
+  // Mappa meteo a due scale: decide DOVE nascono le celle. Il resto del cielo resta
+  // davvero libero, invece di riempirsi di una velatura diffusa.
+  float big = texture(uNoise, vec3(w.x / 70.0, w.z / 70.0, 0.37)).r;
+  // Copertura locale: varia su scala di decine di km (zone più chiuse e zone più aperte)
+  float wm = texture(uNoise, vec3(w.x / 26.0, 0.37, w.z / 26.0)).r;
+  float cov = clamp(uCover * (1.0 + (big - 0.5) * 0.5 * (1.0 - over)) * (0.8 + 0.4 * wm), 0.0, 1.0);
+  float ordinary = 0.0;
+  // Con lo strato compatto pieno i cumuli non contano: si salta il calcolo (prestazioni)
+  if (cov > 0.002 && over < 0.995){
+    // Profilo verticale: base piatta, sommità arrotondata; con più copertura le celle crescono in altezza
+    float topH = 0.38 + 0.55 * cov;
+    float hg = smoothstep(0.0, 0.05, h) * (1.0 - smoothstep(topH * 0.45, topH, h));
+    vec3 wp = w + vec3(broad - 0.5, 0.0, cell - 0.5) * 1.6;
+    // Celle di circa 1 km (Worley a frequenza 4 su 4,5 km), con rigonfiamenti più piccoli
+    float shape = texture(uNoise, vec3(wp.x / 7.0, wp.y / 3.5, wp.z / 7.0)).g * 0.55
+                + texture(uNoise, vec3(wp.x / 4.0, wp.y / 2.4, wp.z / 4.0)).r * 0.30
+                + texture(uNoise, vec3(wp.x / 1.6, wp.y / 1.2, wp.z / 1.6)).g * 0.15;
+    // Soglia di copertura sulla forma: la frazione di volume nuvoloso segue la copertura
+    float raw = (shape * hg - (1.0 - cov)) / max(cov, 0.05);
+    // Bordi morbidi (il buffer è a 1/3 di risoluzione: bordi netti diventano scalettature)
+    ordinary = smoothstep(0.0, 0.5, raw);
+    if (detail && ordinary > 0.0){
+      // Erosione dei bordi: filamenti alla base, volute arrotondate in alto
+      float ero = mix(0.5, texture(uNoise, wp / 0.8).g, clamp(gDetail * 1.5, 0.0, 1.0));
+      float fine = texture(uNoise, wp / 0.33).r;
+      float e = (mix(1.0 - ero, ero, clamp(h * 3.0, 0.0, 1.0)) * 0.8 + (fine - 0.5) * 0.3 * gDetail + 0.1) * 0.42 * (1.0 - ordinary) * mix(0.5, 1.0, gDetail);
+      ordinary = clamp((ordinary - e) / (1.0 - e), 0.0, 1.0);
+    }
+  }
+  if (over <= 0.0) return ordinary;
+
+  // --- Strato compatto (stratocumulo / coperto), invariato rispetto alla V6.8 ---
   float detailCell = texture(uNoise, vec3(w.x / 2.1, 0.32, w.z / 2.1)).g;
   float relief = (broad - 0.5) * 0.42 + (cell - 0.5) * 0.39 + (detailCell - 0.5) * 0.14;
   float bottom = 0.13 + relief;
   float upper = 0.90 + (broad - 0.5) * 0.12;
   float deck = smoothstep(bottom - 0.035, bottom + 0.055, h)
              * (1.0 - smoothstep(upper - 0.10, upper + 0.04, h));
-  float cu = smoothstep(0.0, 0.1, h) * (1.0 - smoothstep(0.45, 1.0, h));
-  // Domain warp a tre scale: spezza le sagome lisce e ripetitive.
-  vec3 warp = vec3(broad - 0.5, detailCell - 0.5, cell - 0.5);
-  vec3 wp = w + warp * vec3(4.0, 0.9, 4.0);
-  float base = texture(uNoise, vec3(wp.x / 8.0, wp.y / 3.8, wp.z / 8.0)).r;
-  float folds = texture(uNoise, vec3(wp.x / 2.6, wp.y / 1.9, wp.z / 2.6)).g;
-  float wisps = texture(uNoise, wp / 0.95).r;
-  float field = (base * 0.67 + folds * 0.24 + wisps * 0.09) * cu;
-  float threshold = mix(0.63, 0.25, cov);
-  float ordinary = smoothstep(threshold - 0.10, threshold + 0.16, field);
-  ordinary *= smoothstep(0.0, 0.15, h) * (1.0 - smoothstep(0.72, 1.0, h));
   float textureDeck = 0.26 + 0.34 * cell + 0.25 * broad + 0.15 * detailCell;
   float denseDeck = deck * textureDeck;
-  float d = mix(ordinary, denseDeck, over);
-  if (d <= 0.0 || !detail) return clamp(d, 0.0, 1.0);
-  float erosion = texture(uNoise, wp / 1.1).g;
-  float fine = texture(uNoise, wp / 0.42).r;
-  d *= mix(0.48 + 0.52 * erosion, 0.62 + 0.38 * erosion, over);
-  d *= 0.78 + 0.22 * fine;
-  return clamp(d, 0.0, 1.0);
+  if (detail && denseDeck > 0.0){
+    vec3 wp2 = w + vec3(broad - 0.5, detailCell - 0.5, cell - 0.5) * vec3(4.0, 0.9, 4.0);
+    float erosion = texture(uNoise, wp2 / 1.1).g;
+    float fine = texture(uNoise, wp2 / 0.42).r;
+    denseDeck *= (0.62 + 0.38 * erosion) * (0.78 + 0.22 * fine);
+  }
+  return clamp(mix(ordinary, denseDeck, over), 0.0, 1.0);
 }
 
 vec3 overcastColor(vec3 ambTop){
@@ -553,8 +690,9 @@ void main(){
   vec3 ro = vec3(0.0, RE + 0.1, 0.0);
   float t0 = raySphere(ro, dir, RE + uBase).y;
   float t1 = raySphere(ro, dir, RE + uTop).y;
+  float t1Full = t1;
   t1 = min(t1, t0 + 12.0);                      // limita il tratto quasi orizzontale
-  float sigma = mix(13.0, 3.8, smoothstep(0.62, 0.95, uCover)) * (1.0 + uDark * 0.45);     // coefficiente di estinzione, per km
+  float sigma = mix(30.0, 3.8, smoothstep(0.62, 0.95, uCover)) * (1.0 + uDark * 0.45);     // coefficiente di estinzione, per km
   float mu = dot(dir, uSunDir);
   // Diffusione multipla approssimata a ottave (luce che rimbalza dentro la nube)
   float ph0 = mix(phaseHG(mu, 0.8), phaseHG(mu, -0.25), 0.3);
@@ -572,15 +710,19 @@ void main(){
   if (t0 >= 150.0){
     // Nubi oltre la distanza di campionamento: nessuna lastra grigia artificiale.
     // Lascia emergere il cielo atmosferico, anziché inventare una copertura opaca.
-    L = vec3(0.0);
-    T = 1.0;
+    // V7: con cielo coperto lo strato prosegue fino all'orizzonte come velo uniforme;
+    // prima qui tornava il cielo sereno e comparivano lame chiare frastagliate in basso.
+    T = 1.0 - ovc * 0.97;
+    L = mix(skyLookup(dir), overcastColor(ambTop), ovc) * (1.0 - T);
   } else {
     const int N = 64;
     float dt = (t1 - t0) / float(N);
-    float jitter = hash12(gl_FragCoord.xy);
+    // V7: jitter ridotto: con nubi più dense quello pieno produceva una grana fissa
+    float jitter = 0.5 + (hash12(gl_FragCoord.xy) - 0.5) * 0.55;
     for (int i = 0; i < N; i++){
       float t = t0 + (float(i) + jitter) * dt;
       vec3 p = ro + dir * t;
+      gDetail = clamp(1.0 - (t - 6.0) / 24.0, 0.0, 1.0);
       float h = (length(p) - RE - uBase) / (uTop - uBase);
       vec3 q = p - ro;
       float d = cloudDensity(q, h, true);
@@ -597,7 +739,7 @@ void main(){
         float S = 0.0, a = 1.0, b = 1.0, c = 1.0;
         for (int k = 0; k < 3; k++){
           S += a * exp(-od * b) * mix(phaseHG(mu, 0.8 * c), phaseHG(mu, -0.25 * c), 0.3);
-          a *= 0.5; b *= 0.4; c *= 0.5;
+          a *= 0.5; b *= 0.7; c *= 0.5;
         }
         float powder = 1.0 - exp(-d * sigma * 0.25);
         S *= mix(1.0, powder * 2.0, 0.35);
@@ -605,15 +747,21 @@ void main(){
         // Luce diffusa del cielo: più debole verso la base della nube. L'ombreggiatura basata sul
         // percorso verso il sole vale solo con il sole alto; di notte non ha senso e oscurava tutto.
         float shade = mix(1.0, 0.35 + 0.65 * exp(-od * 0.15), uSunUp);
-        vec3 amb = (ambTop * mix(0.55, 1.0, clamp(h, 0.0, 1.0)) * shade + uGroundAmb * mix(1.0, 0.4, clamp(h, 0.0, 1.0)))
-                 * (1.0 - uDark * 0.6);
         // Ombreggiatura delle basi: rigonfiamenti vicini e celle più spesse restano leggibili.
         float deckMix = smoothstep(0.72, 0.98, uCover);
+        // V7: nei cumuli sparsi la luce diffusa pesa meno della luce solare diretta, e la base
+        // riceve molto meno cielo della sommità: è ciò che dà il volume (sommità bianche, basi grigie).
+        float ambK = mix(0.62, 1.0, deckMix);
+        float baseAmb = mix(0.38, 0.55, deckMix);
+        vec3 amb = (ambTop * ambK * mix(baseAmb, 1.0, clamp(h, 0.0, 1.0)) * shade + uGroundAmb * mix(1.0, 0.4, clamp(h, 0.0, 1.0)))
+                 * (1.0 - uDark * 0.6);
         vec3 qShade = p - ro - vec3(uWind.x, 0.0, uWind.y);
         float reliefLight = texture(uNoise, vec3(qShade.x / 5.5, 0.71, qShade.z / 5.5)).r;
         float broadLight = texture(uNoise, vec3(qShade.x / 18.0, 0.43, qShade.z / 18.0)).g;
-        float reliefShade = mix(0.55, 1.22, clamp(0.65 * reliefLight + 0.35 * broadLight, 0.0, 1.0));
+        float reliefShade = mix(0.45, 1.3, clamp(0.65 * reliefLight + 0.35 * broadLight, 0.0, 1.0));
         vec3 Ls = (uSunColor * S * PI * 0.5 + amb) * mix(1.0, reliefShade, deckMix);
+        // Luna: luce diretta (senza marcia d'ombra, per costo) con diffusione in avanti sui bordi
+        Ls += uMoonLight * (0.35 + 2.0 * phaseHG(dot(dir, uMoonDir), 0.7)) * mix(0.45, 1.0, clamp(h, 0.0, 1.0));
         float sT = exp(-d * sigma * dt);
         float absorbed = T * (1.0 - sT);
         L += Ls * absorbed;
@@ -625,11 +773,19 @@ void main(){
     // Prospettiva aerea: le nubi lontane si confondono con il cielo
     float dAvg = wSum > 0.0 ? dSum / wSum : t0;
     depthOut = wSum > 0.0 ? dAvg : depthOut;
-    float aer = exp(-dAvg / uHazeDist);
+    float aer = exp(-dAvg / (uHazeDist * 0.7));
     // Sotto un cielo coperto l'aria è illuminata dalla luce diffusa, non dal sole diretto:
     // niente bagliore solare nella foschia lontana
     vec3 airCol = mix(skyLookup(dir), overcastColor(ambTop), ovc);
     L = L * aer + (1.0 - T) * (1.0 - aer) * airCol;
+    // V7: raggi radenti troncati a 12 km. Con cielo coperto lo strato continua oltre:
+    // senza questa chiusura i varchi tra le ondulazioni della base mostravano il cielo chiaro
+    // (lame bianche frastagliate in fondo allo schermo).
+    if (t1Full > t1 + 0.5 && ovc > 0.0){
+      float rest = ovc * smoothstep(0.0, 20.0, t1Full - t1);
+      L += T * rest * airCol;
+      T *= 1.0 - rest;
+    }
     // Conserva il risultato volumetrico anche nelle direzioni più basse:
     // il vecchio farFade trasformava la trama lontana in una lastra grigia.
     // La prospettiva aerea è già applicata sopra tramite aer.
@@ -639,11 +795,13 @@ void main(){
   if (uCirrus > 0.001){
     float tc = raySphere(ro, dir, RE + 9.0).y;
     vec3 pc = dir * tc - vec3(uWind.x * 1.6, 0.0, uWind.y * 1.6);
-    float n = texture(uNoise, vec3(pc.x / 45.0, 0.61, pc.z / 14.0)).r;
-    float n2 = texture(uNoise, vec3(pc.x / 9.0, 0.23, pc.z / 4.0)).g;
-    float dc = smoothstep(0.62, 0.95, n * 0.75 + n2 * 0.35) * uCirrus * smoothstep(400.0, 150.0, tc);
-    float ac = dc * 0.55;
-    vec3 Lc = uSunColor * phaseHG(mu, 0.6) * 4.0 + ambTop * 1.1;
+    // V7: cirri fibrosi e traslucidi. Il domain warp rompe le bande parallele ripetute.
+    float cw = texture(uNoise, vec3(pc.x / 32.0, 0.9, pc.z / 32.0)).g;
+    float n = texture(uNoise, vec3(pc.x / 40.0 + cw * 0.7, 0.61, pc.z / 11.0 + cw * 0.4)).r;
+    float n2 = texture(uNoise, vec3(pc.x / 7.0 + cw, 0.23, pc.z / 1.6)).g;
+    float dc = smoothstep(0.58, 1.0, n * 0.72 + n2 * 0.38) * uCirrus * smoothstep(400.0, 120.0, tc);
+    float ac = dc * 0.42;
+    vec3 Lc = uSunColor * phaseHG(mu, 0.5) * 2.6 + ambTop * 0.8;
     float aer = exp(-tc / (uHazeDist * 2.5));
     Lc = Lc * aer + skyLookup(dir) * (1.0 - aer);
     L += T * Lc * ac;
@@ -671,6 +829,12 @@ uniform vec3 uGroundCol;
 uniform float uOvercast, uDark;
 uniform float uDebugClouds;
 uniform vec3 uGroundAmb, uSunColor;
+// V7.2: cielo che ruota con la Terra, stelle reali e Luna
+uniform mat3 uEqToWorld;     // riferimento equatoriale → mondo (tempo siderale locale)
+uniform vec4 uBright[64];    // stelle principali: direzione equatoriale + (colore·10 + flusso)
+uniform float uBrightN;
+uniform vec3 uMoonDir, uMoonUp, uMoonCol;
+uniform float uMoonR, uMoonFrac;
 
 vec3 aces(vec3 x){ return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
 vec3 toSrgb(vec3 c){ return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
@@ -681,19 +845,76 @@ vec2 projC(vec3 v){
 }
 vec2 toBuf(vec2 uvc){ return (uvc + uMargin) / (1.0 + 2.0 * uMargin); }
 
-vec3 starField(vec3 d){
+vec3 starField(vec3 dw){
+  // Campo di stelle deboli fissato al riferimento equatoriale: ruota con la Terra.
+  vec3 d = transpose(uEqToWorld) * dw;
   vec3 p = d * 170.0;
   vec3 c = floor(p);
   float h = hash13(c);
-  if (h < 0.982) return vec3(0.0);
+  if (h < 0.986) return vec3(0.0);
   vec3 sp = vec3(hash13(c + 1.3), hash13(c + 2.7), hash13(c + 4.1)) * 0.6 + 0.2;
   float dist = length(fract(p) - sp) / 170.0;
   float pa = max(uPixAngle, 1e-4);
   float b = exp(-dist * dist / (pa * pa * 0.9));
-  float mag = pow(hash13(c + 7.7), 5.0) * 0.9 + 0.08;
+  float mag = pow(hash13(c + 7.7), 6.0) * 0.35 + 0.04;   // in città restano solo stelle deboli
   float tw = 0.85 + 0.15 * sin(uTime * (1.0 + h * 3.0) + h * 40.0);
   vec3 tint = mix(vec3(1.0, 0.85, 0.7), vec3(0.75, 0.85, 1.0), hash13(c + 9.1));
   return tint * b * mag * tw;
+}
+
+vec3 brightStars(vec3 dw){
+  vec3 d = transpose(uEqToWorld) * dw;
+  float pa = max(uPixAngle, 1e-4);
+  vec3 acc = vec3(0.0);
+  for (int i = 0; i < 64; i++){
+    if (float(i) >= uBrightN) break;
+    vec4 st = uBright[i];
+    float cd = dot(d, st.xyz);
+    if (cd < 0.99996) continue;                           // oltre ~0,5°: scarta subito
+    float dist = sqrt(max(2.0 - 2.0 * cd, 0.0));
+    float tintI = floor(st.w / 10.0);
+    float flux = st.w - tintI * 10.0;
+    float sz = pa * pa * (0.8 + 1.6 * sqrt(flux));         // le più luminose appaiono più grandi
+    float b = exp(-dist * dist / sz) + 0.04 * flux * exp(-dist * dist / (sz * 9.0));
+    float tw = 0.82 + 0.18 * sin(uTime * (2.2 + fract(flux * 7.31) * 3.0) + float(i) * 1.7);
+    vec3 tint = tintI < 0.5 ? vec3(1.0, 0.98, 0.95) : (tintI < 1.5 ? vec3(0.82, 0.9, 1.0) : vec3(1.0, 0.78, 0.55));
+    acc += tint * b * flux * tw;
+  }
+  return acc;
+}
+
+/* Luna: disco con fase corretta (terminatore orientato dalla direzione reale del Sole),
+   mari principali e luce cinerea. Restituisce la radianza; a parte l'alone. */
+vec3 moonDisk(vec3 dir, out vec3 glow){
+  glow = vec3(0.0);
+  if (uMoonCol.r + uMoonCol.g + uMoonCol.b <= 0.0) return vec3(0.0);
+  float mmu = dot(dir, uMoonDir);
+  float ang = acos(clamp(mmu, -1.0, 1.0));
+  // Alone: aureola stretta + diffusione nella foschia, proporzionali alla fase
+  glow = uMoonCol * uMoonFrac * (0.05 / (1.0 + pow(ang / (uMoonR * 1.6), 2.4)) + 0.006 / (1.0 + pow(ang / (uMoonR * 12.0), 2.0)));
+  float r = ang / uMoonR;
+  if (r >= 1.08) return vec3(0.0);
+  vec3 o = (dir - uMoonDir * mmu) / uMoonR;
+  float rr = min(r, 0.999);
+  vec3 n = o - uMoonDir * sqrt(1.0 - rr * rr);
+  vec3 right = normalize(cross(uMoonDir, uMoonUp));
+  vec2 uv = vec2(dot(o, right), dot(o, uMoonUp));
+  // Mari (nord in alto): Imbrium, Serenitatis, Tranquillitatis, Crisium, Fecunditatis, Nubium, Procellarum
+  float mare = 0.0;
+  mare += 0.80 * exp(-dot(uv - vec2(-0.28, 0.45), uv - vec2(-0.28, 0.45)) / 0.040);
+  mare += 0.75 * exp(-dot(uv - vec2(0.15, 0.38), uv - vec2(0.15, 0.38)) / 0.018);
+  mare += 0.80 * exp(-dot(uv - vec2(0.33, 0.12), uv - vec2(0.33, 0.12)) / 0.030);
+  mare += 0.80 * exp(-dot(uv - vec2(0.68, 0.28), uv - vec2(0.68, 0.28)) / 0.008);
+  mare += 0.60 * exp(-dot(uv - vec2(0.55, -0.15), uv - vec2(0.55, -0.15)) / 0.015);
+  mare += 0.55 * exp(-dot(uv - vec2(-0.15, -0.38), uv - vec2(-0.15, -0.38)) / 0.025);
+  mare += 0.60 * exp(-dot(uv - vec2(-0.58, 0.05), uv - vec2(-0.58, 0.05)) / 0.070);
+  float albedo = 1.0 - 0.33 * clamp(mare, 0.0, 1.0);
+  albedo *= 0.94 + 0.06 * hash12(floor((uv + 1.0) * 24.0));   // lieve granulosità dei crateri
+  float lit = pow(clamp(dot(normalize(n), uSunDir) * 1.0, 0.0, 1.0), 0.55);
+  lit = lit * smoothstep(-0.02, 0.05, dot(normalize(n), uSunDir));
+  float earthshine = 0.035 * (1.0 - uMoonFrac) * (1.0 - uMoonFrac);   // luce cinerea: visibile solo con la falce
+  float edge = 1.0 - smoothstep(1.0 - max(uPixAngle / uMoonR, 0.02) * 1.5, 1.0, r);
+  return uMoonCol * albedo * (lit + earthshine) * edge;
 }
 
 void main(){
@@ -731,7 +952,14 @@ void main(){
     sun += uSunDisk * (0.6 / (1.0 + pow(aa / SUN_R, 2.6)) + 0.0025 / (aa * aa * 900.0 + 0.02));
   }
 
-  vec3 stars = starField(dir) * uStars * step(0.0, dir.y);
+  vec3 stars = vec3(0.0);
+  if (uStars > 0.0005 && dir.y > 0.0){
+    // Estinzione atmosferica: vicino all'orizzonte le stelle si spengono
+    stars = (starField(dir) + brightStars(dir) * 1.6) * uStars * smoothstep(0.0, 0.2, dir.y);
+  }
+  vec3 moonGlow;
+  vec3 moon = dir.y > -0.003 ? moonDisk(dir, moonGlow) : vec3(0.0);
+  if (dir.y <= -0.003) moonGlow = vec3(0.0);
 
   // Riproiezione: la direzione attuale viene proiettata nella camera del buffer delle nubi;
   // poi la nube che ora si trova in P viene cercata dove era all'ultimo ricalcolo (P - spostamento).
@@ -754,6 +982,8 @@ void main(){
     return;
   }
   vec3 col = (sky + stars) * T + sun * T * smoothstep(0.03, 0.6, T) + Lc;
+  // Luna: il disco è nascosto dalle nubi spesse; l'alone illumina anche le nubi sottili (corona)
+  col += moon * T * smoothstep(0.02, 0.5, T) + moonGlow * (T + (1.0 - T) * 0.7);
   // Città riflessa dalle nubi di notte
   col += uCity * (1.0 - T) * 0.6;
   // Lampo: illumina l'interno delle nubi
@@ -764,9 +994,9 @@ void main(){
   vec3 hzc = skyLookup(vec3(0.0, 1.0, 0.0)) * 0.5 + skyLookup(normalize(vec3(-uSunDir.x, 0.08, -uSunDir.z))) * 0.5;
   float l = dot(hzc, vec3(0.2126, 0.7152, 0.0722));
   vec3 fogCol = (mix(vec3(l), hzc, 0.35) * 1.6 + uCity * 1.5);
-  float fogAmt = uFog * (0.57 + 0.23 * (1.0 - smoothstep(0.0, 0.6, dir.y)));
-  // La nebbia attenua i contrasti, senza cancellare interamente la trama delle nubi.
-  col = mix(col, fogCol, clamp(fogAmt, 0.0, 0.76));
+  float fogAmt = uFog * (0.74 + 0.22 * (1.0 - smoothstep(0.0, 0.6, dir.y)));
+  // La nebbia attenua i contrasti; quella fitta (V7) nasconde quasi del tutto il cielo, come dal vero.
+  col = mix(col, fogCol, clamp(fogAmt, 0.0, mix(0.76, 0.93, smoothstep(0.5, 0.9, uFog))));
   float rv = uRainVeil * (0.4 + 0.6 * (1.0 - smoothstep(0.0, 0.5, dir.y)));
   col = mix(col, fogCol * 0.75, clamp(rv, 0.0, 0.8));
 
@@ -794,7 +1024,11 @@ const sunTimesEl = document.querySelector('#suntimes');
 const wxSelect = document.querySelector('#weather');
 const wxStatusEl = document.querySelector('#wxstatus');
 
-const reducedMotion = benchmarkMode || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+// V7.2: il banco prova congela tutto; "Rimuovi animazioni" di Android ferma lampi, pioggia e scintillio,
+// ma le nubi continuano a scorrere alla velocità reale del vento (moto lento, non problematico).
+const freezeMotion = benchmarkMode;
+const prefersReduced = !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+const reducedMotion = freezeMotion || prefersReduced;
 
 let W = 1, H = 1, dpr = 1, horizonY = 1;
 let manual = null;
@@ -806,6 +1040,10 @@ let wxMode = (() => {
 let weather = Object.assign({}, BASE_WX), view = null, cam = null;
 let renderKey = '', timeKey = '', dayKey = '', seedCover = 0.35;   // renderKey = stato (meteo, ora scelta, dimensioni)
 let windOffset = [0, 0], windVel = [0, 0];       // km e km/s
+let evolveOffset = 0;                             // V7: km, avanza col tempo reale
+// V7.5: moltiplicatore di velocità scelto dall'utente (salvato: vale anche per lo sfondo animato,
+// che condivide la memoria della pagina con l'anteprima dell'app)
+const speedMul = 1;   // V8: velocità naturale, nessuna accelerazione
 let cloudsDirty = true;                          // ricalcolo immediato delle nubi (azione dell'utente)
 let userYaw = 0;
 let lastGl = 0, lastOverlay = 0, rafId = 0, timerId = 0, forceFrame = false;
@@ -1028,10 +1266,10 @@ function computeCamera(sunAzS, elev) {
   coperto: 30° ≈ 144 · 10° 136 · 5° 115 · 0° 80 · −4° 45 · −6° 36 · −9° 30 · −12° 28 · notte 26
   Prima l'esposizione "apriva" di notte come una fotocamera e la notte risultava più chiara del crepuscolo.
 */
-const EV_CLEAR = [[-90, -0.57], [-18, -0.57], [-15, -0.45], [-12, -0.23], [-9, 0.72], [-6, 1.98], [-4, 1.86],
-  [-2, 0.82], [0, -0.01], [2, -0.25], [5, -0.43], [10, -0.6], [90, -0.6]];
-const EV_OVERCAST = [[-90, -1.17], [-18, -1.17], [-15, -1.11], [-12, -1.02], [-9, -0.77], [-6, -0.01], [-4, 0.43],
-  [-2, 0.2], [0, 0.33], [2, 0.16], [5, 0.04], [10, -0.25], [20, -0.78], [30, -1.08], [90, -1.08]];
+const EV_CLEAR = [[-90, 0.3], [-18, 0.3], [-15, 0.5], [-12, 0.7], [-9, 1.8], [-6, 4.05], [-4, 3.4],
+  [-2, 1.15], [0, -0.01], [2, -0.25], [5, -0.43], [10, -0.6], [90, -0.6]];
+const EV_OVERCAST = [[-90, -0.25], [-18, -0.25], [-15, -0.22], [-12, -0.2], [-9, -0.2], [-6, -0.01], [-4, 0.43],
+  [-2, 0.2], [0, 0.33], [2, 0.16], [5, -0.06], [10, -0.4], [20, -0.98], [30, -1.35], [90, -1.35]];
 function interpTable(t, x) {
   if (x <= t[0][0]) return t[0][1];
   for (let i = 0; i < t.length - 1; i++) {
@@ -1049,35 +1287,45 @@ function viewFor(date, w) {
   const sunGround = transmittance(0.2, sunDir, haze).map(v => v * ATM.SUN);
   const cloudBase = mix(1.4, 0.9, oc), cloudTop = mix(4.2, 3.4, oc);
   const sunCloud = transmittance((cloudBase + cloudTop) / 2, sunDir, haze).map(v => v * ATM.SUN);
-  const msT = transmittance(3, sunDir, haze);
   const night = 1 - smooth(-14, -4, elev);
   // Bagliore della città (Milano): più forte con cielo coperto o nebbia, che lo riflettono
-  const cityK = night * (0.3 + 0.9 * oc + 0.8 * w.fog);
-  const city = [0.0090, 0.0072, 0.0057].map(v => v * cityK);
+  // V7: il bagliore urbano dipende dall'accensione dei lampioni, non dalla notte astronomica.
+  // Prima compariva solo sotto −14°: tra −5° e −10° il cielo era più buio della notte piena.
+  const cityK = (1 - smooth(-8, -1, elev)) * (0.45 + 0.9 * oc + 0.8 * w.fog);
+  const city = [0.0100, 0.0078, 0.0060].map(v => v * cityK);
   const sunHoriz = Math.max(sunDir[1], 0);
   // La città illumina la base delle nubi con qualunque copertura (grigio-arancio di notte)
   // L'illuminazione pubblica si accende verso il tramonto: la luce sulle nubi cresce già nel crepuscolo
-  const cityOn = 1 - smooth(-9, -2, elev);
-  const cityCloud = [0.040, 0.032, 0.025].map(v => v * cityOn * (1 + 0.5 * w.fog));
+  const cityOn = 1 - smooth(-11, -3, elev);
+  const cityCloud = [0.052, 0.040, 0.029].map(v => v * cityOn * (1 + 0.5 * w.fog));
   const groundAmb = [0, 1, 2].map(k => sunCloud[k] * sunHoriz * 0.05 + cityCloud[k]);
   // Esposizione automatica, come una fotocamera: aperta di notte, chiusa di giorno
   // Esposizione da tabella calibrata: la luminosità dell'immagine scende in modo continuo
   // dal giorno alla notte (vedi EV_CLEAR / EV_OVERCAST). Correzioni extra per nebbia e nubi più scure.
-  const ev = mix(interpTable(EV_CLEAR, elev), interpTable(EV_OVERCAST, elev), oc)
-    - 0.4 * w.fog * (1 - night) - 0.6 * Math.max(0, w.dark - 0.25 * oc);
+  // V7.2: Luna (posizione, fase) e sua luce sul cielo e sulle nubi
+  const moon = moonState(date, sunDir);
+  const daylight = smooth(-7, 14, elev);
+  const moonUp = moon.alt > -1.5;
+  const moonT = moonUp ? transmittance(0.2, moon.dir, haze) : [0, 0, 0];
+  const moonRad = mix(1.8, 0.09, daylight);
+  const moonLight = moonUp ? moon.frac * moon.frac * smooth(-1, 15, moon.alt) * (1 - daylight) : 0;
+  const evMix = Math.max(oc, smooth(0.08, 0.9, w.cover));   // V7: anche le nubi sparse riflettono la luce urbana
+  const ev = mix(interpTable(EV_CLEAR, elev), interpTable(EV_OVERCAST, elev), evMix)
+    - 0.4 * w.fog * (1 - night) - 1.1 * Math.max(0, w.dark - 0.25 * oc);
   return {
     elev, morning: s.az < 0, az: s.az, sunDir, haze, sunGround, sunCloud, cloudBase, cloudTop,
-    msAmb: msT.map(v => v * ATM.SUN * 0.03),
     night, city, groundAmb,
-    nightSky: [0.0036, 0.0052, 0.0104].map(v => v * night),
+    nightSky: [0.0036, 0.0052, 0.0104].map((v, k) => v * night + [0.005, 0.009, 0.018][k] * moonLight),
+    moon, moonCol: moonT.map(v => v * moonRad), moonLight,
+    moonCloud: [0.045, 0.048, 0.055].map(v => v * moonLight),
     groundCol: [0.012, 0.012, 0.014].map(v => v * (0.2 + 0.8 * smooth(-6, 10, elev)) * 20),
     exposure: Math.pow(2, ev),
     stars: night * (1 - smooth(0.7, 1, w.cover) * 0.95) * (1 - w.fog * 0.9) * (1 - w.rain * 0.8) * (1 - w.snow * 0.8) * 0.5,
     hazeDist: 45 / (1 + (haze - 1) * 0.5),
-    cirrus: 0.3 * (0.2 + 0.8 * smooth(0.05, 0.4, w.cover)) * (1 - smooth(0.7, 1, w.cover)) * (1 - w.fog),
+    cirrus: (w.cloudHigh != null ? 0.45 * w.cloudHigh : 0.2 * smooth(0.02, 0.4, w.cover)) * (1 - smooth(0.7, 1, w.cover)) * (1 - w.fog),
     fog: w.fog,
     rainVeil: w.rain * 0.35 + w.snow * 0.3,
-    daylight: smooth(-7, 14, elev)
+    daylight
   };
 }
 
@@ -1095,7 +1343,9 @@ function phaseLabel(v) {
   frazione di volume nuvoloso: guardando di sbieco lo strato si vedono più nubi.
   Tabella misurata sul rendering: copertura visibile → soglia dello shader.
 */
-const COVER_CURVE = [[0, 0], [0.2, 0.05], [0.4, 0.1], [0.6, 0.2], [0.7, 0.3], [0.88, 0.5], [0.95, 0.7], [1, 1]];
+// V7: ricalibrata sulla nuova forma dei cumuli (copertura visibile ≈ copertura meteo).
+const COVER_CURVE = [[0, 0], [0.02, 0.24], [0.05, 0.27], [0.1, 0.297], [0.2, 0.33], [0.3, 0.357], [0.4, 0.383],
+  [0.5, 0.414], [0.6, 0.443], [0.7, 0.48], [0.8, 0.53], [0.9, 0.6], [0.95, 0.7], [1, 1]];
 function coverToShader(c) {
   for (let i = 0; i < COVER_CURVE.length - 1; i++) {
     const [x0, y0] = COVER_CURVE[i], [x1, y1] = COVER_CURVE[i + 1];
@@ -1104,10 +1354,54 @@ function coverToShader(c) {
   return 1;
 }
 
+function secondsOfDay(d) {
+  return (d.getTime() - new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) / 1000;
+}
+
+/** Vento delle nubi (km/s, verso cui soffia) all'istante dato: orario reale se disponibile, altrimenti quello del tempo scelto. */
+function cloudWindAt(date) {
+  if (wxMode === 'reale' && real.status === 'ok') {
+    const up = upperWindAt(date);
+    if (up) return windVectorKmS({ cloudWind: up.speed, cloudWindDir: up.dir });
+  }
+  return windVectorKmS(activeWeather(date));
+}
+
+/*
+  V8.1 — Posizione delle nubi in funzione dell'ora: integrale del vento dalla mezzanotte, a passi
+  di 15 minuti (con il vento orario reale cambia velocità e direzione durante la giornata).
+  Così il cielo è coerente nel tempo: ora reale = moto naturale; cursore dell'ora = nubi dove
+  sarebbero a quell'ora; riaccensione dello schermo = nessun salto all'indietro.
+*/
+const cloudPath = { key: '', cum: [] };
+function cloudOffsetAt(date) {
+  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const seed = date.getFullYear() * 372 + date.getMonth() * 31 + date.getDate();
+  const key = `${day.getTime()} ${wxMode} ${real.fetchedAt} ${real.status}`;
+  const STEP = 900;   // s
+  if (cloudPath.key !== key) {
+    cloudPath.key = key;
+    const cum = [[hashInt(seed, 1, 1, 2) * 200, hashInt(seed, 2, 2, 3) * 200]];
+    for (let i = 0; i < 96; i++) {
+      const v = cloudWindAt(new Date(day.getTime() + (i + 0.5) * STEP * 1000));
+      const p = cum[i];
+      cum.push([p[0] + v[0] * STEP, p[1] + v[1] * STEP]);
+    }
+    cloudPath.cum = cum;
+  }
+  const secs = clamp(secondsOfDay(date), 0, 86399.999);
+  const i = Math.floor(secs / STEP), f = secs - i * STEP;
+  const v = cloudWindAt(new Date(day.getTime() + (i + 0.5) * STEP * 1000));
+  const p = cloudPath.cum[i];
+  return [p[0] + v[0] * f, p[1] + v[1] * f];
+}
+
 function windVectorKmS(w) {
   const toAz = (w.cloudWindDir + 180) % 360;          // verso cui soffia
   const d = dirFromAzEl(toAz, 0);
-  const speed = w.cloudWind / 3600 * CONFIG.windTimeScale;
+  // V7.3: stessa velocità anche con "Rimuovi animazioni"/risparmio energetico (che su molti telefoni
+  // attiva prefers-reduced-motion): con il vento reale debole le nubi risultavano immobili.
+  const speed = Math.max(w.cloudWind, CONFIG.minCloudWindKmh) / 3600 * CONFIG.windTimeScale * speedMul;
   return [d[0] * speed, d[2] * speed];
 }
 
@@ -1119,7 +1413,7 @@ function renderSkyLut() {
   setU(progSky, 'uSunDir', view.sunDir);
   setU(progSky, 'uHaze', view.haze);
   setU(progSky, 'uSunIllum', ATM.SUN);
-  setU(progSky, 'uMsAmb', view.msAmb);
+  setU(progSky, 'uMsK', 0.035);
   draw(skyLut);
 }
 
@@ -1127,7 +1421,7 @@ function margins() { return [CONFIG.parallaxPx / W, CONFIG.parallaxPx / H]; }
 
 function camSnapshot(c) { return { fwd: c.fwd.slice(), right: c.right.slice(), up: c.up.slice(), tanX: c.tanX, tanY: c.tanY, yaw: c.yaw }; }
 
-function setCloudUniforms(wind, c) {
+function setCloudUniforms(wind, c, evolve) {
   gl.useProgram(progClouds.p);
   bindTex(progClouds, 'uSkyLut', 0, skyLut.tex);
   bindTex(progClouds, 'uNoise', 1, noiseTex, true);
@@ -1152,12 +1446,15 @@ function setCloudUniforms(wind, c) {
   setU(progClouds, 'uCirrus', view.cirrus);
   setU(progClouds, 'uHazeDist', view.hazeDist);
   setU(progClouds, 'uWind', wind);
+  setU(progClouds, 'uEvolve', evolve);
+  setU(progClouds, 'uMoonDir', view.moon.dir);
+  setU(progClouds, 'uMoonLight', view.moonCloud);
   setU(progClouds, 'uDesat', smooth(0.6, 1, weather.cover) * smooth(2, 10, view.elev) * 0.6);
 }
 
 /** Ricalcolo immediato e completo (dopo un'azione dell'utente). Annulla un ricalcolo a strisce in corso. */
 function renderCloudsNow(now) {
-  setCloudUniforms(windOffset, cam);
+  setCloudUniforms(windOffset, cam, evolveOffset);
   draw(clouds.front);
   clouds.frontWind = windOffset.slice();
   clouds.frontCam = camSnapshot(cam);
@@ -1166,7 +1463,7 @@ function renderCloudsNow(now) {
 }
 
 function startCloudJob(now) {
-  clouds.job = { wind: windOffset.slice(), cam: camSnapshot(cam), strip: 0 };
+  clouds.job = { wind: windOffset.slice(), evolve: evolveOffset, cam: camSnapshot(cam), strip: 0 };
   clouds.lastStart = now;
 }
 
@@ -1176,12 +1473,13 @@ function stepCloudJob() {
   if (!j) return;
   const t = clouds.back, K = CONFIG.cloudStrips;
   const y0 = Math.floor(t.h * j.strip / K), y1 = Math.floor(t.h * (j.strip + 1) / K);
-  setCloudUniforms(j.wind, j.cam);
+  setCloudUniforms(j.wind, j.cam, j.evolve);
   gl.enable(gl.SCISSOR_TEST);
   gl.scissor(0, y0, t.w, y1 - y0);
   draw(t);
   gl.disable(gl.SCISSOR_TEST);
   if (++j.strip >= K) {
+    diag.swaps++;
     [clouds.front, clouds.back] = [clouds.back, clouds.front];
     clouds.frontWind = j.wind;
     clouds.frontCam = j.cam;
@@ -1224,6 +1522,17 @@ function renderComposite(now, ox, oy) {
   setU(progComp, 'uDebugClouds', appParams.get('debugClouds') === '1' ? 1 : 0);
   setU(progComp, 'uGroundAmb', view.groundAmb);
   setU(progComp, 'uSunColor', view.sunCloud);
+  // V7.2: rotazione del cielo calcolata a ogni frame (moto continuo delle stelle)
+  const eqm = eqMatrix(currentDate());
+  if (progComp.loc.uEqToWorld != null) gl.uniformMatrix3fv(progComp.loc.uEqToWorld, false, eqm);
+  const bl = progComp.loc['uBright[0]'];
+  if (bl != null) gl.uniform4fv(bl, BRIGHT_FLAT);
+  setU(progComp, 'uBrightN', BRIGHT_EQ.length);
+  setU(progComp, 'uMoonDir', view.moon.dir);
+  setU(progComp, 'uMoonUp', view.moon.up);
+  setU(progComp, 'uMoonCol', view.moonCol);
+  setU(progComp, 'uMoonR', 0.00454 * CONFIG.moonScale);
+  setU(progComp, 'uMoonFrac', view.moon.frac);
   draw(null);
 }
 
@@ -1435,7 +1744,6 @@ function update(now) {
     const seed = date.getFullYear() * 372 + date.getMonth() * 31 + date.getDate();
     seedCover = 0.1 + hashInt(seed, 3, 7, 1) * 0.5;
     // Nuvole diverse ogni giorno; solo al primo avvio, così a mezzanotte il cielo non salta
-    if (!windOffset[0] && !windOffset[1]) windOffset = [hashInt(seed, 1, 1, 2) * 500, hashInt(seed, 2, 2, 3) * 500];
     const t = computeSunTimes(date);
     sunTimesEl.textContent = `Alba ${t.rise === null ? '--:--' : fmtMinutes(t.rise)} · Tramonto ${t.set === null ? '--:--' : fmtMinutes(t.set)}`;
     renderKey = '';
@@ -1455,7 +1763,7 @@ function update(now) {
     timeKey = tKey;
     weather = w;
     view = viewFor(date, w);
-    windVel = reducedMotion ? [0, 0] : windVectorKmS(w);
+    windVel = freezeMotion ? [0, 0] : windVectorKmS(w);
     if (glOk) renderSkyLut();
     if (stateChanged) {
       cloudsDirty = true;
@@ -1467,7 +1775,8 @@ function update(now) {
     clockEl.textContent = fmtMinutes(mins);
     if (manual === null) slider.value = mins;
     const phase = phaseLabel(view);
-    phaseEl.textContent = (manual === null ? 'Ora reale · ' : 'Anteprima · ') + phase;
+    const moonTxt = view.moon.alt > 0 ? ` · ${moonPhaseName(view.moon)} ${Math.round(view.moon.frac * 100)}%` : '';
+    phaseEl.textContent = (manual === null ? 'Ora reale · ' : 'Anteprima · ') + phase + moonTxt;
     glCanvas.setAttribute('aria-label', `Cielo alle ${fmtMinutes(mins)}: ${phase}${w.desc ? ', ' + w.desc.toLowerCase() : ''}`);
   }
   updateWxStatus(date);
@@ -1480,11 +1789,52 @@ function update(now) {
 
 function parallax() { return [-tilt.x * CONFIG.parallaxPx, -tilt.y * CONFIG.parallaxPx]; }
 
+/* ----- V7.2: diagnostica a schermo (attiva con "Diagnostica nuvole" nell'app, ?debugClouds=1) ----- */
+const diag = { on: appParams.get('debugClouds') === '1' || storage.get('cielo.diag') === '1',
+  el: null, frames: 0, timerFrames: 0, swaps: 0, since: 0, lastFrame: 0, hist: [] };
+// Aggiornata da un timer indipendente: se il ciclo di disegno si blocca, la diagnostica lo mostra
+setInterval(() => updateDiag(performance.now()), 1000);
+function updateDiag(now) {
+  if (!diag.on) { if (diag.el) { diag.el.remove(); diag.el = null; } return; }
+  if (!diag.el) {
+    diag.el = document.createElement('div');
+    diag.el.style.cssText = 'position:fixed;left:8px;top:calc(8px + env(safe-area-inset-top,0px));z-index:9;'
+      + 'font:11px/1.35 monospace;color:#fff;background:rgba(0,0,0,.6);padding:6px 8px;border-radius:6px;pointer-events:none;white-space:pre-wrap;max-width:calc(100vw - 170px)';
+    document.body.appendChild(diag.el);
+    diag.el.textContent = 'V8 · diagnostica in avvio…';
+    diag.since = now;
+    return;
+  }
+  const secs = (now - diag.since) / 1000;
+  const kmh = Math.hypot(windVel[0], windVel[1]) * 3600;
+  diag.hist.push([now, windOffset[0], windOffset[1], evolveOffset]);
+  while (diag.hist.length > 11) diag.hist.shift();
+  const h0 = diag.hist[0];
+  const moved = Math.hypot(windOffset[0] - h0[1], windOffset[1] - h0[2]) * 1000;
+  const evo = (evolveOffset - h0[3]) * 1000;
+  const span = ((now - h0[0]) / 1000).toFixed(0);
+  const stall = diag.lastFrame ? ((now - diag.lastFrame) / 1000).toFixed(1) : '—';
+  diag.el.textContent = `V8.1 · fps ${(diag.frames / secs).toFixed(1)} (timer ${diag.timerFrames}) · ultimo frame ${stall} s fa\n`
+    + `hidden ${document.hidden} · reduce ${prefersReduced}\n`
+    + `nubi ${kmh.toFixed(0)} km/h eff. · vento quota ${Math.round(weather.cloudWind || 0)} km/h\n`
+    + `offset ${windOffset[0].toFixed(2)}, ${windOffset[1].toFixed(2)} km\n`
+    + `nubi spostate ${moved.toFixed(0)} m e trasformate ${evo.toFixed(0)} m negli ultimi ${span} s\n`
+    + `ricalcoli nubi/s ${(diag.swaps / secs).toFixed(1)}\n`
+    + `meteo ${wxMode} · ${real.status}`;
+  diag.frames = 0; diag.timerFrames = 0; diag.swaps = 0; diag.since = now;
+}
+
 /** Frame WebGL: vento, nubi (immediate o a strisce), composizione. */
 let wallpaperFirstFrame = false;
-function glFrame(now, dt) {
-  windOffset[0] += windVel[0] * dt;
-  windOffset[1] += windVel[1] * dt;
+function glFrame(now, dtWind) {
+  // V7.2: il vento usa il tempo reale trascorso, senza il limite di 0,25 s. Se Android rallenta
+  // i frame del wallpaper (risparmio energetico, pagina considerata in secondo piano), prima le
+  // nubi rallentavano nella stessa proporzione e sembravano ferme; ora restano dove devono essere.
+  // V8.1: la posizione delle nubi è funzione dell'ora mostrata (vedi cloudOffsetAt):
+  // in ora reale scorrono col vento vero; spostando il cursore dell'ora si spostano di conseguenza.
+  const cd = currentDate();
+  windOffset = cloudOffsetAt(cd);
+  evolveOffset = CONFIG.cloudEvolveKmS * secondsOfDay(cd);
   if (!glOk) return;
   if (cloudsDirty || !clouds.frontCam) {
     renderCloudsNow(now);
@@ -1515,8 +1865,10 @@ function precipActive() { return precip.drops.length > 0 || precip.flakes.length
 
 function needsAnimation() {
   if (tilt.on || tilt.x !== 0 || tilt.y !== 0 || dragging || clouds.job) return true;
+  if (freezeMotion) return false;
+  if (weather.cover > 0.01) return true;              // le nubi si muovono anche con "Rimuovi animazioni"
   if (reducedMotion) return false;
-  return weather.cover > 0.01 || precipActive() || (view && view.stars > 0.0005);
+  return precipActive() || (view && view.stars > 0.0005);
 }
 
 /*
@@ -1531,11 +1883,13 @@ function loop(now) {
   const glInterval = (tilt.on || dragging || weather.thunder) ? 33 : 50;
   const glDue = forceFrame || now - lastGl >= glInterval - 4;
   if (glDue) {
-    const dt = reducedMotion ? 0 : Math.min(0.25, lastGl ? (now - lastGl) / 1000 : 0);
+    const dtWind = freezeMotion ? 0 : Math.min(600, lastGl ? (now - lastGl) / 1000 : 0);
+    if (lastGl) diag.frames++;
     forceFrame = false;
     lastGl = now;
     update(now);
-    glFrame(now, dt);
+    glFrame(now, dtWind);
+    diag.lastFrame = now;
   }
   if (glDue || precipActive()) {
     const dt = reducedMotion ? 0 : Math.min(0.25, lastOverlay ? (now - lastOverlay) / 1000 : 0);
@@ -1548,8 +1902,15 @@ function loop(now) {
 function schedule() {
   cancelAnimationFrame(rafId); rafId = 0;
   clearTimeout(timerId); timerId = 0;
-  if (needsAnimation()) rafId = requestAnimationFrame(loop);
-  else {
+  if (needsAnimation()) {
+    rafId = requestAnimationFrame(loop);
+    // V7.2: rete di sicurezza. Alcune WebView (wallpaper su display virtuale, risparmio energetico)
+    // sospendono requestAnimationFrame pur mostrando la pagina: allora il ciclo prosegue col timer.
+    timerId = setTimeout(() => {
+      timerId = 0;
+      if (rafId) { cancelAnimationFrame(rafId); rafId = 0; diag.timerFrames++; loop(performance.now()); }
+    }, 250);
+  } else {
     // Cielo fermo: nessun frame fino al prossimo scatto di 15 secondi
     const ms = 15000 - (Date.now() % 15000) + 50;
     timerId = setTimeout(() => { rafId = requestAnimationFrame(loop); }, ms);
@@ -1561,6 +1922,11 @@ function requestRender() {
   cancelAnimationFrame(rafId);
   clearTimeout(timerId); timerId = 0;
   rafId = requestAnimationFrame(loop);
+  // Rete di sicurezza anche per il primo frame (vedi schedule)
+  timerId = setTimeout(() => {
+    timerId = 0;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; diag.timerFrames++; loop(performance.now()); }
+  }, 250);
 }
 
 /* =========================================================================
@@ -1575,6 +1941,15 @@ toggleBtn.addEventListener('click', () => {
   toggleBtn.textContent = panel.classList.contains('hidden') ? 'Mostra controlli' : 'Nascondi controlli';
 });
 wxSelect.value = wxMode;
+const diagBtn = document.querySelector('#diagBtn');
+diagBtn.setAttribute('aria-pressed', String(diag.on));
+diagBtn.addEventListener('click', () => {
+  diag.on = !diag.on;
+  storage.set('cielo.diag', diag.on ? '1' : '0');
+  diagBtn.setAttribute('aria-pressed', String(diag.on));
+  diag.frames = 0; diag.timerFrames = 0; diag.swaps = 0; diag.since = performance.now();
+  requestRender();
+});
 wxSelect.addEventListener('change', () => {
   wxMode = wxSelect.value;
   storage.set('cielo.meteo', wxMode);
