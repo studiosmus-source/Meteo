@@ -40,7 +40,7 @@ public class SkyWallpaperService extends WallpaperService {
  static String skyUrl(Context ctx,boolean wallpaper){
   SharedPreferences p=ctx.getSharedPreferences("meteo",MODE_PRIVATE);
   String lat=p.getString("lat","45.47"),lon=p.getString("lon","9.19");
-  return "https://appassets.androidplatform.net/assets/sky.html?lat="+lat+"&lon="+lon+(wallpaper?"&wallpaper=1":"");
+  return "https://appassets.androidplatform.net/assets/sky.html?lat="+lat+"&lon="+lon+(wallpaper?"&wallpaper=1":"")+(p.getBoolean("debugClouds",false)?"&debugClouds=1":"");
  }
  private static final class SkyPresentation extends Presentation {
   private WebView web;
