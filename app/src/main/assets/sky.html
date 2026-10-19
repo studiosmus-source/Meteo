@@ -295,6 +295,7 @@ async function fetchWeather() {
       windHiDir: i == null ? null : (src.wind_direction_850hPa ? src.wind_direction_850hPa[i] : null)
     });
     real.current = toRec(j.current);
+    try { localStorage.setItem('meteo.lastWeather', JSON.stringify({lat:CONFIG.latitude,lon:CONFIG.longitude,rec:real.current,at:Date.now()})); } catch (_) {}
     real.hourly = new Map();
     (j.hourly.time || []).forEach((t, i) => real.hourly.set(t, toRec(j.hourly, i)));
     real.status = 'ok';
@@ -965,9 +966,8 @@ function computeCamera(sunAzS, elev) {
   const tLong = Math.tan(CONFIG.maxFovDeg * DEG / 2);
   const tanY = portrait ? tLong : tLong * H / W;
   const tanX = portrait ? tLong * W / H : tLong;
-  // Inclinazione verso l'alto tale che l'orizzonte cada appena sopra il pannello
-  const yh = 1 - 2 * horizonY / H;
-  const pitch = Math.atan(-yh * tanY) / DEG;
+  // Inquadratura tutta verso il cielo: anche il bordo inferiore resta sopra l'orizzonte.
+  const pitch = Math.atan(tanY) / DEG + 8;
   // Rotazione: di giorno verso il sole, di notte verso la finestra
   const rel = wrapDeg(sunAzS - CONFIG.facingAzimuth);
   const follow = CONFIG.followSun ? clamp(rel, -110, 110) * 0.85 * smooth(-10, -1, elev) : 0;
@@ -1329,8 +1329,7 @@ function resize() {
   fxCanvas.height = Math.round(H * dpr);
   fx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  const pr = panel.getBoundingClientRect();
-  horizonY = clamp(pr.top - 10, H * 0.55, H * 0.92);
+  horizonY = H;
 
   if (glOk) {
     const m = margins();
@@ -1635,9 +1634,25 @@ function start() {
   else addEventListener('resize', resize);
   resize();
 }
-// Lascia disegnare il pannello prima del calcolo del rumore 3D (qualche centinaio di ms)
-showNotice('Preparo le nuvole…');
-setTimeout(() => { noticeEl.style.display = 'none'; start(); }, 30);
+// Non mostrare un cielo di fantasia prima che arrivi il meteo reale.
+async function launchSky() {
+  showNotice('Caricamento meteo reale…');
+  if (wallpaperMode) {
+    try {
+      const cached = JSON.parse(localStorage.getItem('meteo.lastWeather') || 'null');
+      if (cached && cached.lat === CONFIG.latitude && cached.lon === CONFIG.longitude &&
+          cached.rec && Date.now() - cached.at < 3600000) {
+        real.current = cached.rec;
+        real.fetchedAt = cached.at;
+        real.status = 'ok';
+      }
+    } catch (_) {}
+    if (real.status !== 'ok') await fetchWeather();
+  }
+  noticeEl.style.display = 'none';
+  start();
+}
+setTimeout(launchSky, 30);
 </script>
 </body>
 </html>
