@@ -540,7 +540,7 @@ void main(){
   float t0 = raySphere(ro, dir, RE + uBase).y;
   float t1 = raySphere(ro, dir, RE + uTop).y;
   t1 = min(t1, t0 + 12.0);                      // limita il tratto quasi orizzontale
-  float sigma = mix(28.0, 9.0, smoothstep(0.72, 0.98, uCover)) * (1.0 + uDark * 1.2);     // coefficiente di estinzione, per km
+  float sigma = mix(13.0, 3.8, smoothstep(0.62, 0.95, uCover)) * (1.0 + uDark * 0.45);     // coefficiente di estinzione, per km
   float mu = dot(dir, uSunDir);
   // Diffusione multipla approssimata a ottave (luce che rimbalza dentro la nube)
   float ph0 = mix(phaseHG(mu, 0.8), phaseHG(mu, -0.25), 0.3);
