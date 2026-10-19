@@ -22,7 +22,7 @@ public class SkyWallpaperService extends WallpaperService {
    if(virtualDisplay!=null&&w==width&&h==height)return;
    width=w;height=h;destroyDisplay();if(visible)createDisplay();
   }
-  @Override public void onVisibilityChanged(boolean v){visible=v;if(v){if(virtualDisplay==null&&width>0&&height>0)createDisplay();}else destroyDisplay();}
+  @Override public void onVisibilityChanged(boolean v){visible=v;if(v){if(virtualDisplay==null&&width>0&&height>0)createDisplay();}/* Keep the existing rendered WebView alive while lock screen toggles visibility. */}
   private void createDisplay(){
    try{
     DisplayManager manager=(DisplayManager)getSystemService(Context.DISPLAY_SERVICE);
