@@ -27,6 +27,8 @@ public class SettingsActivity extends Activity {
   Button position=new Button(this);position.setText("Usa posizione del telefono");layout.addView(position);
   position.setOnClickListener(v->{if(checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)!=PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION},5);else useLocation();});
   Button save=new Button(this);save.setText("Salva località");layout.addView(save);save.setOnClickListener(v->saveLocation());
+  Button debug=new Button(this);debug.setText("Diagnostica nuvole ON/OFF");layout.addView(debug);
+  debug.setOnClickListener(v->{boolean state=!prefs.getBoolean("debugClouds",false);prefs.edit().putBoolean("debugClouds",state).apply();android.widget.Toast.makeText(this,state?"Diagnostica attiva. Reimposta lo sfondo.":"Diagnostica disattiva. Reimposta lo sfondo.",1).show();});
   Button apply=new Button(this);apply.setText("Imposta sfondo animato");layout.addView(apply);
   apply.setOnClickListener(v->{if(saveLocation()){Intent i=new Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER);i.putExtra(WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,new android.content.ComponentName(this,SkyWallpaperService.class));startActivity(i);}});
   WebView preview=new WebView(this);preview.getSettings().setJavaScriptEnabled(true);preview.getSettings().setDomStorageEnabled(true);
