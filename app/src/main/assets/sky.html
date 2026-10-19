@@ -496,24 +496,26 @@ float cloudDensity(vec3 q, float h, bool detail){
   float big = texture(uNoise, vec3(w.x / 70.0, w.z / 70.0, 0.37)).r;
   float cov = clamp(uCover * (1.08 + (big - 0.5) * (0.28 + 1.3 * (1.0 - uCover))), 0.0, 1.0);
   if (cov <= 0.001) return 0.0;
-  // Profilo verticale: base piatta, sommità arrotondate; con cielo coperto lo strato è pieno
-  float shapeCu = smoothstep(0.0, 0.1, h) * smoothstep(1.0, 0.45, h);
-  // Con cielo coperto la base dello strato è ondulata: zone più spesse e più sottili,
-  // senza le quali lo strato è uniforme e il suo movimento non si percepisce
-  float bump = texture(uNoise, vec3(w.x / 7.0, 0.71, w.z / 7.0)).r;
-  float broad = texture(uNoise, vec3(w.x / 24.0, 0.43, w.z / 24.0)).g;
-  float hs = h - (bump - 0.5) * 0.45 - (broad - 0.5) * 0.35;
-  float shapeSt = smoothstep(0.0, 0.08, hs) * smoothstep(1.0, 0.75, h) * (0.38 + 0.38 * bump + 0.24 * broad);
-  float shape = mix(shapeCu, shapeSt, smoothstep(0.75, 1.0, uCover));
-  float base = texture(uNoise, vec3(w.x / 14.0, w.y / 6.0, w.z / 14.0)).r;
-  float d = remap(base * shape, 1.0 - cov, 1.0, 0.0, 1.0);
-  // Anche con copertura totale la base resta irregolare, non un piano uniforme.
-  float strata = smoothstep(0.68, 0.98, uCover);
-  d *= mix(1.0, 0.60 + 0.40 * smoothstep(0.22, 0.82, 0.58 * bump + 0.42 * broad), strata);
+  // Stratocumuli: la base delle nubi è una superficie tridimensionale ondulata.
+  // La copertura al 100% non deve trasformare la densità in una lastra opaca uniforme.
+  float over = smoothstep(0.72, 0.97, uCover);
+  float broad = texture(uNoise, vec3(w.x / 18.0, 0.43, w.z / 18.0)).g;
+  float cell = texture(uNoise, vec3(w.x / 5.5, 0.71, w.z / 5.5)).r;
+  float detailCell = texture(uNoise, vec3(w.x / 2.1, 0.32, w.z / 2.1)).g;
+  float relief = (broad - 0.5) * 0.38 + (cell - 0.5) * 0.34 + (detailCell - 0.5) * 0.09;
+  float bottom = 0.13 + relief;
+  float upper = 0.90 + (broad - 0.5) * 0.12;
+  float deck = smoothstep(bottom - 0.035, bottom + 0.055, h)
+             * (1.0 - smoothstep(upper - 0.10, upper + 0.04, h));
+  float cu = smoothstep(0.0, 0.1, h) * (1.0 - smoothstep(0.45, 1.0, h));
+  float base = texture(uNoise, vec3(w.x / 12.0, w.y / 5.0, w.z / 12.0)).r;
+  float ordinary = clamp((base * cu - (1.0 - cov)) / max(cov, 0.001), 0.0, 1.0);
+  float textureDeck = 0.40 + 0.28 * cell + 0.20 * broad + 0.12 * detailCell;
+  float denseDeck = deck * textureDeck;
+  float d = mix(ordinary, denseDeck, over);
   if (d <= 0.0 || !detail) return clamp(d, 0.0, 1.0);
-  // Erosione dei bordi con rumore fine
-  float det = texture(uNoise, w / 2.4).g;
-  d = remap(d, det * 0.25 * (1.0 - h * 0.4), 1.0, 0.0, 1.0);
+  float erosion = texture(uNoise, w / 1.8).g;
+  d *= mix(0.88 + 0.12 * erosion, 0.76 + 0.24 * erosion, over);
   return clamp(d, 0.0, 1.0);
 }
 
@@ -531,7 +533,7 @@ void main(){
   float t0 = raySphere(ro, dir, RE + uBase).y;
   float t1 = raySphere(ro, dir, RE + uTop).y;
   t1 = min(t1, t0 + 12.0);                      // limita il tratto quasi orizzontale
-  float sigma = 28.0 * (1.0 + uDark * 1.8);     // coefficiente di estinzione, per km
+  float sigma = mix(28.0, 9.0, smoothstep(0.72, 0.98, uCover)) * (1.0 + uDark * 1.2);     // coefficiente di estinzione, per km
   float mu = dot(dir, uSunDir);
   // Diffusione multipla approssimata a ottave (luce che rimbalza dentro la nube)
   float ph0 = mix(phaseHG(mu, 0.8), phaseHG(mu, -0.25), 0.3);
@@ -583,7 +585,13 @@ void main(){
         float shade = mix(1.0, 0.35 + 0.65 * exp(-od * 0.15), uSunUp);
         vec3 amb = (ambTop * mix(0.55, 1.0, clamp(h, 0.0, 1.0)) * shade + uGroundAmb * mix(1.0, 0.4, clamp(h, 0.0, 1.0)))
                  * (1.0 - uDark * 0.6);
-        vec3 Ls = uSunColor * S * PI * 0.5 + amb;
+        // Ombreggiatura delle basi: rigonfiamenti vicini e celle più spesse restano leggibili.
+        float deckMix = smoothstep(0.72, 0.98, uCover);
+        vec3 qShade = p - ro - vec3(uWind.x, 0.0, uWind.y);
+        float reliefLight = texture(uNoise, vec3(qShade.x / 5.5, 0.71, qShade.z / 5.5)).r;
+        float broadLight = texture(uNoise, vec3(qShade.x / 18.0, 0.43, qShade.z / 18.0)).g;
+        float reliefShade = mix(0.55, 1.22, clamp(0.65 * reliefLight + 0.35 * broadLight, 0.0, 1.0));
+        vec3 Ls = (uSunColor * S * PI * 0.5 + amb) * mix(1.0, reliefShade, deckMix);
         float sT = exp(-d * sigma * dt);
         float absorbed = T * (1.0 - sT);
         L += Ls * absorbed;
