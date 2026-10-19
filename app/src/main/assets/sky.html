@@ -508,7 +508,7 @@ float cloudDensity(vec3 q, float h, bool detail){
   float base = texture(uNoise, vec3(w.x / 14.0, w.y / 6.0, w.z / 14.0)).r;
   float d = remap(base * shape, 1.0 - cov, 1.0, 0.0, 1.0);
   // Anche con copertura totale la base resta irregolare, non un piano uniforme.
-  float strata = smoothstep(0.78, 1.0, uCover);
+  float strata = smoothstep(0.68, 0.98, uCover);
   d *= mix(1.0, 0.60 + 0.40 * smoothstep(0.22, 0.82, 0.58 * bump + 0.42 * broad), strata);
   if (d <= 0.0 || !detail) return clamp(d, 0.0, 1.0);
   // Erosione dei bordi con rumore fine
@@ -728,8 +728,9 @@ void main(){
   vec3 hzc = skyLookup(vec3(0.0, 1.0, 0.0)) * 0.5 + skyLookup(normalize(vec3(-uSunDir.x, 0.08, -uSunDir.z))) * 0.5;
   float l = dot(hzc, vec3(0.2126, 0.7152, 0.0722));
   vec3 fogCol = (mix(vec3(l), hzc, 0.35) * 1.6 + uCity * 1.5);
-  float fogAmt = uFog * (0.8 + 0.2 * (1.0 - smoothstep(0.0, 0.6, dir.y)));
-  col = mix(col, fogCol, clamp(fogAmt, 0.0, 0.92));
+  float fogAmt = uFog * (0.57 + 0.23 * (1.0 - smoothstep(0.0, 0.6, dir.y)));
+  // La nebbia attenua i contrasti, senza cancellare interamente la trama delle nubi.
+  col = mix(col, fogCol, clamp(fogAmt, 0.0, 0.76));
   float rv = uRainVeil * (0.4 + 0.6 * (1.0 - smoothstep(0.0, 0.5, dir.y)));
   col = mix(col, fogCol * 0.75, clamp(rv, 0.0, 0.8));
 
@@ -972,7 +973,7 @@ function computeCamera(sunAzS, elev) {
   const tanY = portrait ? tLong : tLong * H / W;
   const tanX = portrait ? tLong * W / H : tLong;
   // Inquadratura tutta verso il cielo: anche il bordo inferiore resta sopra l'orizzonte.
-  const pitch = Math.atan(tanY) / DEG + 4 + (wallpaperMode ? 2.2 * Math.sin(Date.now() / 210000) : 0);
+  const pitch = Math.atan(tanY) / DEG + 0.8 + (wallpaperMode ? 0.7 * Math.sin(Date.now() / 210000) : 0);
   // Rotazione: di giorno verso il sole, di notte verso la finestra
   const rel = wrapDeg(sunAzS - CONFIG.facingAzimuth);
   const follow = CONFIG.followSun ? clamp(rel, -110, 110) * 0.85 * smooth(-10, -1, elev) : 0;
