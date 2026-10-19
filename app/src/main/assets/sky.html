@@ -655,6 +655,7 @@ uniform vec3 uCity;          // inquinamento luminoso
 uniform vec3 uNightSky;      // luminescenza notturna di fondo
 uniform vec3 uGroundCol;
 uniform float uOvercast, uDark;
+uniform float uDebugClouds;
 uniform vec3 uGroundAmb, uSunColor;
 
 vec3 aces(vec3 x){ return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
@@ -731,6 +732,13 @@ void main(){
   float T = dir.y < -0.01 ? 1.0 : cl.a;
   vec3 Lc = dir.y < -0.01 ? vec3(0.0) : cl.rgb;
 
+  // Diagnostica separata: R = opacità, G = luminanza nube, B = profondità.
+  // Attivabile soltanto con ?debugClouds=1, non visibile nello sfondo normale.
+  if (uDebugClouds > 0.5){
+    float lum = dot(Lc, vec3(0.2126, 0.7152, 0.0722));
+    fragColor = vec4(clamp(vec3(1.0 - T, lum * 0.8, cd / 30.0), 0.0, 1.0), 1.0);
+    return;
+  }
   vec3 col = (sky + stars) * T + sun * T * smoothstep(0.03, 0.6, T) + Lc;
   // Città riflessa dalle nubi di notte
   col += uCity * (1.0 - T) * 0.6;
@@ -1198,6 +1206,7 @@ function renderComposite(now, ox, oy) {
   setU(progComp, 'uGroundCol', view.groundCol);
   setU(progComp, 'uOvercast', smooth(0.6, 1, weather.cover));
   setU(progComp, 'uDark', weather.dark);
+  setU(progComp, 'uDebugClouds', new URLSearchParams(location.search).get('debugClouds') === '1' ? 1 : 0);
   setU(progComp, 'uGroundAmb', view.groundAmb);
   setU(progComp, 'uSunColor', view.sunCloud);
   draw(null);
