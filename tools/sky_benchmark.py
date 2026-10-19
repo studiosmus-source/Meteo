@@ -79,8 +79,7 @@ def main():
         "01":"sereno_11", "02":"poco_15", "03":"nuvoloso_11",
         "04":"nuvoloso_15", "05":"coperto_11", "09":"temporale_15",
         "11":"nebbia_07", "13":"sereno_18", "14":"nuvoloso_18",
-        "15":"sereno_18", "16":"sereno_23", "17":"coperto_23",
-        "18":"poco_23",
+        "16":"sereno_23", "17":"coperto_23",
     }
     if args.references:
         folder=Path(args.references)
