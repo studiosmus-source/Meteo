@@ -46,6 +46,7 @@ def main():
     ap.add_argument("--html", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--baseline")
+    ap.add_argument("--references", help="Directory with numbered 01..18 reference JPG/PNG images")
     ap.add_argument("--wait-ms",type=int,default=3500)
     args=ap.parse_args()
     output=Path(args.out); output.mkdir(parents=True,exist_ok=True)
@@ -72,6 +73,28 @@ def main():
                 except Exception as exc:
                     report["failures"].append({"scene":key,"errors":[str(exc)]})
         browser.close()
+    # Generated reference images are visual targets, not meteorological ground truth.
+    # Match comparable scenarios only: other hours/conditions are not silently extrapolated.
+    reference_map = {
+        "01":"sereno_11", "02":"poco_15", "03":"nuvoloso_11",
+        "04":"nuvoloso_15", "05":"coperto_11", "09":"temporale_15",
+        "11":"nebbia_07", "13":"sereno_18", "14":"nuvoloso_18",
+        "15":"sereno_18", "16":"sereno_23", "17":"coperto_23",
+        "18":"poco_23",
+    }
+    if args.references:
+        folder=Path(args.references)
+        report["reference_comparison"]={}
+        for number,scene in reference_map.items():
+            matches=sorted(p for p in folder.glob(number+"*") if p.suffix.lower() in (".jpg",".jpeg",".png",".webp"))
+            if not matches or scene not in report["scenarios"]:
+                continue
+            ref=metrics(matches[0]); actual=report["scenarios"][scene]
+            report["reference_comparison"][number]={
+                "file":str(matches[0]),"scene":scene,"reference_metrics":ref,
+                "delta":{k:round(actual[k]-ref[k],2) for k in ("mean_luma","blue_pct","contrast","local_contrast")},
+                "note":"Visual comparison only; synthetic reference does not validate weather physics."
+            }
     if args.baseline:
         old=json.loads(Path(args.baseline).read_text(encoding="utf-8")).get("scenarios",{})
         report["changes_from_baseline"]={}
